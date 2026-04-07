@@ -1,0 +1,4 @@
+camoufox[geoip]
+python-dotenv
+httpx
+flask

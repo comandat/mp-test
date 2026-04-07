@@ -1,0 +1,32 @@
+[
+  {
+    "email": "pod-roman-pouch@duck.com",
+    "password": "pod-roman-pouch@duck.coM1",
+    "phone": "0762545927",
+    "created_at": "2026-04-07T13:33:22.207279+00:00"
+  },
+  {
+    "email": "cross-hacking-able@duck.com",
+    "password": "cross-hacking-able@duck.coM1",
+    "phone": "0784133638",
+    "created_at": "2026-04-07T14:47:53.094700+00:00"
+  },
+  {
+    "email": "oink-chemo-udder@duck.com",
+    "password": "oink-chemo-udder@duck.coM1",
+    "phone": "0769368589",
+    "created_at": "2026-04-07T15:23:32.507050+00:00"
+  },
+  {
+    "email": "suffix-dude-deceit@duck.com",
+    "password": "suffix-dude-deceit@duck.coM1",
+    "phone": "0768322055",
+    "created_at": "2026-04-07T16:56:21.237267+00:00"
+  },
+  {
+    "email": "veto-uptown-barber@duck.com",
+    "password": "veto-uptown-barber@duck.coM1",
+    "phone": "0731162153",
+    "created_at": "2026-04-07T18:00:42.495435+00:00"
+  }
+]

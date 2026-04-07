@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eMAG Account Generator - Pro</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #005eb8;
+            --primary-hover: #004d9c;
+            --bg-color: #0d1117;
+            --glass-bg: rgba(255, 255, 255, 0.05);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --text: #f0f6fc;
+            --text-muted: #8b949e;
+            --success: #238636;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: radial-gradient(circle at top right, rgba(0, 94, 184, 0.15) 0%, transparent 40%),
+                              radial-gradient(circle at bottom left, rgba(200, 20, 20, 0.1) 0%, transparent 40%);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-weight: 800;
+            font-size: 28px;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #fff, #a5c8ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .main-btn {
+            width: 100%;
+            padding: 16px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .main-btn:hover {
+            background: var(--primary-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px -10px var(--primary);
+        }
+
+        .main-btn:disabled {
+            background: #21262d;
+            color: var(--text-muted);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .logs-container {
+            margin-top: 25px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 16px;
+            display: none;
+        }
+
+        .logs-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logs-title .spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid var(--text-muted);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .log-entry {
+            font-size: 14px;
+            color: #c9d1d9;
+            margin-bottom: 6px;
+            font-family: inherit;
+        }
+        
+        .log-entry.active {
+            color: #58a6ff;
+            font-weight: 500;
+        }
+
+        .result-container {
+            margin-top: 25px;
+            display: none;
+        }
+
+        .data-row {
+            display: flex;
+            align-items: center;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--glass-border);
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-bottom: 12px;
+            transition: border-color 0.2s;
+        }
+
+        .data-row:hover {
+            border-color: rgba(255,255,255,0.2);
+        }
+
+        .data-label {
+            width: 60px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .data-value {
+            flex: 1;
+            font-family: monospace;
+            font-size: 15px;
+            color: #fff;
+        }
+
+        .copy-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            color: #fff;
+            background: rgba(255,255,255,0.1);
+        }
+
+        .sec-btn {
+            width: 100%;
+            padding: 14px;
+            background: transparent;
+            border: 1px solid var(--glass-border);
+            color: white;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: all 0.2s;
+        }
+
+        .sec-btn:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .sms2-container {
+            display: none;
+            margin-top: 25px;
+            padding-top: 25px;
+            border-top: 1px dashed var(--glass-border);
+            text-align: center;
+        }
+
+        .sms2-code {
+            font-size: 32px;
+            font-weight: 800;
+            letter-spacing: 4px;
+            color: var(--success);
+            margin: 15px 0;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--success);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 500;
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="header">
+            <h1>Crează cont</h1>
+            <p>Automatizare completă via HeroSMS & Camoufox</p>
+        </div>
+
+        <button id="mainBtn" class="main-btn" onclick="startGeneration()">
+            eMAG
+        </button>
+
+        <div id="logsContainer" class="logs-container">
+            <div class="logs-title">
+                <div id="logSpinner" class="spinner"></div>
+                Status Live
+            </div>
+            <div id="logOutput" class="log-entry active">Așteptare inițializare...</div>
+        </div>
+
+        <div id="resultContainer" class="result-container">
+            <div class="data-row">
+                <div class="data-label">Email</div>
+                <div class="data-value" id="valEmail">-</div>
+                <button class="copy-btn" onclick="copyText('valEmail')"><i class="fa-regular fa-copy"></i></button>
+            </div>
+            
+            <div class="data-row">
+                <div class="data-label">Parolă</div>
+                <div class="data-value" id="valPassword">-</div>
+                <button class="copy-btn" onclick="copyText('valPassword')"><i class="fa-regular fa-copy"></i></button>
+            </div>
+
+            <div class="data-row">
+                <div class="data-label">Telefon</div>
+                <div class="data-value" id="valPhone">-</div>
+                <button class="copy-btn" onclick="copyText('valPhone')"><i class="fa-regular fa-copy"></i></button>
+            </div>
+
+            <button id="waitSmsBtn" class="sec-btn" onclick="requestSecondSms()">
+                <i class="fa-solid fa-comment-sms"></i> Așteaptă SMS (Re-validare)
+            </button>
+        </div>
+
+        <div id="sms2Container" class="sms2-container">
+            <p style="color: var(--text-muted); font-size: 14px;">Al doilea cod recepționat:</p>
+            <div class="sms2-code" id="valSms2">-</div>
+            <button class="sec-btn" onclick="copyText('valSms2')" style="margin-top: 0;">
+                <i class="fa-regular fa-copy"></i> Copiază Codul
+            </button>
+            <p style="margin-top: 20px; font-size: 13px; color: var(--text-muted); opacity: 0.8;">
+                Gata! Procesul s-a încheiat. Reîncarcă pagina pentru a crea un cont nou.
+            </p>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">Copiat în clipboard!</div>
+
+    <script>
+        let currentActivationId = null;
+        let eventSource = null;
+
+        function connectSSE() {
+            if(eventSource) {
+                eventSource.close();
+            }
+            eventSource = new EventSource('/api/status');
+            eventSource.onmessage = function(e) {
+                if(e.data === "FINISH") {
+                    document.getElementById('logSpinner').style.display = 'none';
+                    document.getElementById('logOutput').innerText = "Proces finalizat cu succes!";
+                    document.getElementById('logOutput').style.color = "var(--success)";
+                } else if(e.data.startsWith("Eroare")) {
+                    document.getElementById('logSpinner').style.display = 'none';
+                    document.getElementById('logOutput').innerText = e.data;
+                    document.getElementById('logOutput').style.color = "#f85149";
+                    document.getElementById('mainBtn').disabled = false;
+                    document.getElementById('mainBtn').innerHTML = 'eMAG';
+                } else {
+                    document.getElementById('logOutput').innerText = e.data;
+                }
+            };
+        }
+
+        async function startGeneration() {
+            const btn = document.getElementById('mainBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Se rulează automatizarea...';
+            
+            document.getElementById('resultContainer').style.display = 'none';
+            document.getElementById('sms2Container').style.display = 'none';
+            document.getElementById('logsContainer').style.display = 'block';
+            document.getElementById('logSpinner').style.display = 'block';
+            document.getElementById('logOutput').style.color = "#58a6ff";
+            document.getElementById('logOutput').innerText = 'Se trimit datele spre cerver...';
+
+            connectSSE();
+
+            try {
+                const res = await fetch('/api/generate', { method: 'POST' });
+                const data = await res.json();
+                
+                if(res.ok && data.email) {
+                    document.getElementById('valEmail').innerText = data.email;
+                    document.getElementById('valPassword').innerText = data.password;
+                    document.getElementById('valPhone').innerText = data.phone;
+                    currentActivationId = data.activation_id;
+                    
+                    document.getElementById('resultContainer').style.display = 'block';
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Cont generat';
+                } else {
+                    btn.disabled = false;
+                    btn.innerHTML = 'eMAG';
+                }
+            } catch(e) {
+                document.getElementById('logOutput').innerText = "Network Error: " + e.message;
+                document.getElementById('logSpinner').style.display = 'none';
+                btn.disabled = false;
+                btn.innerHTML = 'eMAG';
+            }
+        }
+
+        async function requestSecondSms() {
+            if(!currentActivationId) return;
+
+            const btn = document.getElementById('waitSmsBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Aștept SMS HeroSMS...';
+
+            document.getElementById('logSpinner').style.display = 'block';
+            document.getElementById('logOutput').style.color = "#58a6ff";
+            document.getElementById('logOutput').innerText = 'Se așteaptă al doilea SMS...';
+
+            try {
+                const res = await fetch('/api/sms/resend', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ activation_id: currentActivationId })
+                });
+                const data = await res.json();
+                
+                if(res.ok && data.sms_code) {
+                    document.getElementById('sms2Container').style.display = 'block';
+                    document.getElementById('valSms2').innerText = data.sms_code;
+                    document.getElementById('resultContainer').style.display = 'none';
+                    btn.innerHTML = '<i class="fa-solid fa-comment-sms"></i> Așteaptă SMS (Re-validare)';
+                } else {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Eroare. Re-încearcă';
+                }
+            } catch(e) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Network Eroare. Re-încearcă';
+            }
+        }
+
+        function copyText(elementId) {
+            const text = document.getElementById(elementId).innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                showToast();
+            });
+        }
+
+        function showToast() {
+            const toast = document.getElementById('toast');
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 2500);
+        }
+    </script>
+</body>
+</html>
