@@ -345,6 +345,10 @@
             <p>Automatizare completă via HeroSMS & Camoufox</p>
         </div>
 
+        <button class="sec-btn" onclick="window.open('https://url-provider.aptoide.com/download/cGFja2FnZV9uYW1lPXJvLmVtYWcuYW5kcm9pZCZhcGtfbWQ1c3VtPWVhNWZhOGVmNDc1NmVmM2EyMjBhOGY5ZTA1MTFmYzBkJnZlcmNvZGU9MzI1JmxvY2FsZT1lbl9HQiZhYWI9MSZxPWJYbERVRlU5WVhKdE5qUXRkamhoTEdGeWJXVmhZbWt0ZGpkaExHRnliV1ZoWW1rbWJHVmhibUpoWTJzOU1BJnVybF9hcHRvaWRlPWh0dHBzJTNBJTJGJTJGcG9vbC5hcGsuYXB0b2lkZS5jb20lMkZhcHRvaWRlLXdlYiUyRnJvLWVtYWctYW5kcm9pZC0zMjUtNzQxNTU2MTEtZWE1ZmE4ZWY0NzU2ZWYzYTIyMGE4ZjllMDUxMWZjMGQuYXBr', '_blank')" style="margin-top: 0; margin-bottom: 20px; background: rgba(0, 94, 184, 0.1); border-color: rgba(0, 94, 184, 0.3);">
+            <i class="fa-brands fa-android" style="color: #a4c639;"></i> Descarcă emag.apk
+        </button>
+
         <button id="mainBtn" class="main-btn" onclick="startGeneration()">
             eMAG
         </button>
@@ -412,17 +416,17 @@
 
     <div id="toast" class="toast">Copiat în clipboard!</div>
 
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
     <script>
         let currentActivationId = null;
-        let eventSource = null;
+        let socket = null;
 
-        function connectSSE() {
-            if(eventSource) {
-                eventSource.close();
-            }
-            eventSource = new EventSource('/api/status');
-            eventSource.onmessage = function(e) {
-                if(e.data === "FINISH") {
+        window.addEventListener('DOMContentLoaded', () => {
+            socket = io();
+
+            socket.on("server_log", (e) => {
+                const msg = e.msg || e; 
+                if(msg === "FINISH") {
                     document.getElementById('logSpinner').style.display = 'none';
                     document.getElementById('logOutput').innerText = "Proces finalizat cu succes!";
                     document.getElementById('logOutput').style.color = "var(--success)";
@@ -430,19 +434,19 @@
                     const btn = document.getElementById('mainBtn');
                     btn.innerHTML = '<i class="fa-solid fa-check"></i> Cont generat';
                     document.getElementById('stopBtn').style.display = 'none';
-                } else if(e.data.startsWith("SCREENSHOT:")) {
-                    const b64Data = e.data.substring(11);
+                } else if(msg.startsWith("SCREENSHOT:")) {
+                    const b64Data = msg.substring(11);
                     document.getElementById('screenshotImage').src = "data:image/png;base64," + b64Data;
                     document.getElementById('screenshotModal').style.display = 'flex';
-                } else if(e.data.startsWith("Eroare")) {
+                } else if(msg.startsWith("Eroare") || msg.startsWith("Nu s-a putut") || msg.startsWith("Eșec") || msg.startsWith("[Avertisment]")) {
                     document.getElementById('logSpinner').style.display = 'none';
-                    document.getElementById('logOutput').innerText = e.data;
+                    document.getElementById('logOutput').innerText = msg;
                     document.getElementById('logOutput').style.color = "#f85149";
                     document.getElementById('mainBtn').disabled = false;
                     document.getElementById('mainBtn').innerHTML = 'eMAG';
                     document.getElementById('stopBtn').style.display = 'none';
-                } else if(e.data.startsWith("DATA:")) {
-                    const dataStr = e.data.substring(5);
+                } else if(msg.startsWith("DATA:")) {
+                    const dataStr = msg.substring(5);
                     const data = JSON.parse(dataStr);
                     document.getElementById('valEmail').innerText = data.email;
                     document.getElementById('valPassword').innerText = data.password;
@@ -450,8 +454,8 @@
                     currentActivationId = data.activation_id;
                     
                     document.getElementById('resultContainer').style.display = 'block';
-                } else if(e.data.startsWith("AL_DOILEA_SMS:")) {
-                    const sms2 = e.data.substring(14);
+                } else if(msg.startsWith("AL_DOILEA_SMS:")) {
+                    const sms2 = msg.substring(14);
                     document.getElementById('sms2Container').style.display = 'block';
                     document.getElementById('valSms2').innerText = sms2;
                     document.getElementById('resultContainer').style.display = 'none';
@@ -461,18 +465,18 @@
                     document.getElementById('logOutput').style.color = "var(--success)";
                     document.getElementById('waitSmsBtn').innerHTML = '<i class="fa-solid fa-check"></i> Finalizat';
                 } else {
-                    document.getElementById('logOutput').innerText = e.data;
+                    document.getElementById('logOutput').innerText = msg;
                     if(document.getElementById('logOutput').style.color === "var(--success)") {
                         document.getElementById('logOutput').style.color = "#58a6ff"; 
                     }
                 }
-            };
-        }
+            });
+        });
 
         async function startGeneration() {
             const btn = document.getElementById('mainBtn');
             btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Se rulează automatizarea...';
+            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Trimitem ordin spre laptop...';
             document.getElementById('stopBtn').style.display = 'block';
             
             document.getElementById('resultContainer').style.display = 'none';
@@ -480,18 +484,12 @@
             document.getElementById('logsContainer').style.display = 'block';
             document.getElementById('logSpinner').style.display = 'block';
             document.getElementById('logOutput').style.color = "#58a6ff";
-            document.getElementById('logOutput').innerText = 'Se trimit datele spre cerver...';
+            document.getElementById('logOutput').innerText = 'Se trimite ordinul pe cloud...';
 
-            connectSSE();
-
-            try {
-                // Nu mai asteptam json(), deoarece datele vin pe SSE stream
-                const res = await fetch('/api/generate', { method: 'POST' });
-                if(!res.ok) {
-                    throw new Error("Eroare la pornirea procesului");
-                }
-            } catch(e) {
-                document.getElementById('logOutput').innerText = "Network Error: " + e.message;
+            if(socket && socket.connected) {
+                socket.emit("client_start");
+            } else {
+                document.getElementById('logOutput').innerText = "Network Error: Deconectat de la Cloud!";
                 document.getElementById('logSpinner').style.display = 'none';
                 btn.disabled = false;
                 btn.innerHTML = 'eMAG';
@@ -499,16 +497,12 @@
             }
         }
 
-        async function forceStopGeneration() {
+        function forceStopGeneration() {
             const stopBtn = document.getElementById('stopBtn');
             stopBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Se oprește...';
             stopBtn.disabled = true;
             
-            try {
-                await fetch('/api/generate/stop', { method: 'POST' });
-            } catch(e) {
-                console.error("Force stop error", e);
-            }
+            if(socket) socket.emit("client_stop");
             
             setTimeout(() => {
                 stopBtn.disabled = false;
@@ -520,27 +514,20 @@
             document.getElementById('screenshotModal').style.display = 'none';
         }
 
-        async function requestSecondSms() {
+        function requestSecondSms() {
             if(!currentActivationId) return;
 
             const btn = document.getElementById('waitSmsBtn');
             btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Aștept SMS HeroSMS...';
+            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Se recontactează laptopul...';
 
             document.getElementById('logSpinner').style.display = 'block';
             document.getElementById('logOutput').style.color = "#58a6ff";
-            document.getElementById('logOutput').innerText = 'Se așteaptă al doilea SMS...';
+            document.getElementById('logOutput').innerText = 'Se trimite ordin așteptare...';
 
-            try {
-                const res = await fetch('/api/sms/resend', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ activation_id: currentActivationId })
-                });
-                if(!res.ok) {
-                    throw new Error("Eroare status");
-                }
-            } catch(e) {
+            if(socket && socket.connected) {
+                socket.emit("client_resend_sms", { activation_id: currentActivationId });
+            } else {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Network Eroare. Re-încearcă';
             }
