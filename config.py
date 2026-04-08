@@ -19,6 +19,7 @@ class Config:
     sms_poll_interval: int
     sms_poll_timeout: int
     max_phone_retries: int
+    smspool_mode: bool = False
 
 
 # Known service codes from HeroSMS
@@ -65,6 +66,6 @@ def load_config() -> Config:
         extensions_dir=project_root / "extensions",
         accounts_file=project_root / "accounts.json",
         sms_poll_interval=5,
-        sms_poll_timeout=180,
+        sms_poll_timeout=300,
         max_phone_retries=5,
     )

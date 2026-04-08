@@ -251,6 +251,90 @@
             transform: translateX(-50%) translateY(0);
             opacity: 1;
         }
+
+        .stop-btn {
+            width: 100%;
+            padding: 10px;
+            background: rgba(200, 20, 20, 0.2);
+            border: 1px solid rgba(200, 20, 20, 0.4);
+            color: #ff7b72;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 15px;
+            display: none;
+        }
+
+        .stop-btn:hover {
+            background: rgba(200, 20, 20, 0.4);
+        }
+
+        /* Screenshot Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(5px);
+            z-index: 2000;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .modal-content {
+            background: var(--bg-color);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            max-width: 90%;
+            max-height: 90%;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.8);
+        }
+
+        .modal-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h3 {
+            color: #f85149;
+            font-size: 16px;
+        }
+
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 20px;
+            transition: color 0.2s;
+        }
+
+        .modal-close:hover {
+            color: white;
+        }
+
+        .modal-body {
+            padding: 0;
+            overflow: auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-body img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -263,6 +347,10 @@
 
         <button id="mainBtn" class="main-btn" onclick="startGeneration()">
             eMAG
+        </button>
+
+        <button id="stopBtn" class="stop-btn" onclick="forceStopGeneration()">
+            <i class="fa-solid fa-stop"></i> Oprire Forțată
         </button>
 
         <div id="logsContainer" class="logs-container">
@@ -309,6 +397,19 @@
         </div>
     </div>
 
+    <!-- Screenshot Modal -->
+    <div id="screenshotModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-camera"></i> Eroare - Captură Ecran din Browser</h3>
+                <button class="modal-close" onclick="closeScreenshot()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <img id="screenshotImage" src="" alt="Error Screenshot">
+            </div>
+        </div>
+    </div>
+
     <div id="toast" class="toast">Copiat în clipboard!</div>
 
     <script>
@@ -325,14 +426,45 @@
                     document.getElementById('logSpinner').style.display = 'none';
                     document.getElementById('logOutput').innerText = "Proces finalizat cu succes!";
                     document.getElementById('logOutput').style.color = "var(--success)";
+                    
+                    const btn = document.getElementById('mainBtn');
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Cont generat';
+                    document.getElementById('stopBtn').style.display = 'none';
+                } else if(e.data.startsWith("SCREENSHOT:")) {
+                    const b64Data = e.data.substring(11);
+                    document.getElementById('screenshotImage').src = "data:image/png;base64," + b64Data;
+                    document.getElementById('screenshotModal').style.display = 'flex';
                 } else if(e.data.startsWith("Eroare")) {
                     document.getElementById('logSpinner').style.display = 'none';
                     document.getElementById('logOutput').innerText = e.data;
                     document.getElementById('logOutput').style.color = "#f85149";
                     document.getElementById('mainBtn').disabled = false;
                     document.getElementById('mainBtn').innerHTML = 'eMAG';
+                    document.getElementById('stopBtn').style.display = 'none';
+                } else if(e.data.startsWith("DATA:")) {
+                    const dataStr = e.data.substring(5);
+                    const data = JSON.parse(dataStr);
+                    document.getElementById('valEmail').innerText = data.email;
+                    document.getElementById('valPassword').innerText = data.password;
+                    document.getElementById('valPhone').innerText = data.phone;
+                    currentActivationId = data.activation_id;
+                    
+                    document.getElementById('resultContainer').style.display = 'block';
+                } else if(e.data.startsWith("AL_DOILEA_SMS:")) {
+                    const sms2 = e.data.substring(14);
+                    document.getElementById('sms2Container').style.display = 'block';
+                    document.getElementById('valSms2').innerText = sms2;
+                    document.getElementById('resultContainer').style.display = 'none';
+                    
+                    document.getElementById('logSpinner').style.display = 'none';
+                    document.getElementById('logOutput').innerText = "Al doilea SMS a ajuns și s-a închis!";
+                    document.getElementById('logOutput').style.color = "var(--success)";
+                    document.getElementById('waitSmsBtn').innerHTML = '<i class="fa-solid fa-check"></i> Finalizat';
                 } else {
                     document.getElementById('logOutput').innerText = e.data;
+                    if(document.getElementById('logOutput').style.color === "var(--success)") {
+                        document.getElementById('logOutput').style.color = "#58a6ff"; 
+                    }
                 }
             };
         }
@@ -341,6 +473,7 @@
             const btn = document.getElementById('mainBtn');
             btn.disabled = true;
             btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Se rulează automatizarea...';
+            document.getElementById('stopBtn').style.display = 'block';
             
             document.getElementById('resultContainer').style.display = 'none';
             document.getElementById('sms2Container').style.display = 'none';
@@ -352,27 +485,39 @@
             connectSSE();
 
             try {
+                // Nu mai asteptam json(), deoarece datele vin pe SSE stream
                 const res = await fetch('/api/generate', { method: 'POST' });
-                const data = await res.json();
-                
-                if(res.ok && data.email) {
-                    document.getElementById('valEmail').innerText = data.email;
-                    document.getElementById('valPassword').innerText = data.password;
-                    document.getElementById('valPhone').innerText = data.phone;
-                    currentActivationId = data.activation_id;
-                    
-                    document.getElementById('resultContainer').style.display = 'block';
-                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Cont generat';
-                } else {
-                    btn.disabled = false;
-                    btn.innerHTML = 'eMAG';
+                if(!res.ok) {
+                    throw new Error("Eroare la pornirea procesului");
                 }
             } catch(e) {
                 document.getElementById('logOutput').innerText = "Network Error: " + e.message;
                 document.getElementById('logSpinner').style.display = 'none';
                 btn.disabled = false;
                 btn.innerHTML = 'eMAG';
+                document.getElementById('stopBtn').style.display = 'none';
             }
+        }
+
+        async function forceStopGeneration() {
+            const stopBtn = document.getElementById('stopBtn');
+            stopBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Se oprește...';
+            stopBtn.disabled = true;
+            
+            try {
+                await fetch('/api/generate/stop', { method: 'POST' });
+            } catch(e) {
+                console.error("Force stop error", e);
+            }
+            
+            setTimeout(() => {
+                stopBtn.disabled = false;
+                stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Oprire Forțată';
+            }, 2000);
+        }
+
+        function closeScreenshot() {
+            document.getElementById('screenshotModal').style.display = 'none';
         }
 
         async function requestSecondSms() {
@@ -392,16 +537,8 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ activation_id: currentActivationId })
                 });
-                const data = await res.json();
-                
-                if(res.ok && data.sms_code) {
-                    document.getElementById('sms2Container').style.display = 'block';
-                    document.getElementById('valSms2').innerText = data.sms_code;
-                    document.getElementById('resultContainer').style.display = 'none';
-                    btn.innerHTML = '<i class="fa-solid fa-comment-sms"></i> Așteaptă SMS (Re-validare)';
-                } else {
-                    btn.disabled = false;
-                    btn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Eroare. Re-încearcă';
+                if(!res.ok) {
+                    throw new Error("Eroare status");
                 }
             } catch(e) {
                 btn.disabled = false;

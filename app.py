@@ -49,6 +49,9 @@ def status_stream():
                 
     return Response(event_stream(), mimetype="text/event-stream")
 
+import threading
+import json
+
 @app.route("/api/generate", methods=["POST"])
 def generate():
     """Endpoint that runs the account creation automation"""
@@ -57,15 +60,33 @@ def generate():
     def status_callback(msg):
         notify_all(msg)
 
+    def background_task():
+        try:
+            notify_all("Inițializare proces de generare cont...")
+            account_data = create_account(config, status_callback=status_callback)
+            
+            # Trimite datele procesate spre interfață
+            notify_all(f"DATA:{json.dumps(account_data)}")
+            notify_all("FINISH")
+        except Exception as e:
+            error_msg = f"Eroare: {str(e)}"
+            notify_all(error_msg)
+
+    # Eliberează request-ul HTTP imediat și mută execuția în fundal
+    t = threading.Thread(target=background_task)
+    t.start()
+    return jsonify({"status": "started"})
+
+@app.route("/api/generate/stop", methods=["POST"])
+def stop_generation():
+    """Endpoint that forcefully aborts the running generation task"""
+    from account_creator import force_stop
     try:
-        notify_all("Inițializare proces de generare cont...")
-        account_data = create_account(config, status_callback=status_callback)
-        notify_all("FINISH")
-        return jsonify(account_data)
+        force_stop()
+        notify_all("Comandă Oprire Forțată primită!")
+        return jsonify({"status": "stopped"})
     except Exception as e:
-        error_msg = f"Eroare: {str(e)}"
-        notify_all(error_msg)
-        return jsonify({"error": error_msg}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/sms/resend", methods=["POST"])
 def resend():
@@ -77,17 +98,21 @@ def resend():
         return jsonify({"error": "Missing activation_id"}), 400
         
     config = load_config()
-    try:
-        from sms_provider import complete_activation
-        notify_all("Așteptând al doilea SMS...")
-        new_sms_code = resend_sms(config, activation_id)
-        complete_activation(config, activation_id)
-        notify_all(f"Al doilea SMS a fost recepționat și activarea finalizată!")
-        return jsonify({"sms_code": new_sms_code})
-    except Exception as e:
-        error_msg = f"Eroare re-trimitere SMS: {str(e)}"
-        notify_all(error_msg)
-        return jsonify({"error": error_msg}), 500
+    
+    def background_task():
+        try:
+            from sms_provider import complete_activation
+            notify_all("Așteptând al doilea SMS...")
+            new_sms_code = resend_sms(config, activation_id)
+            complete_activation(config, activation_id)
+            notify_all(f"AL_DOILEA_SMS:{new_sms_code}")
+        except Exception as e:
+            error_msg = f"Eroare re-trimitere SMS: {str(e)}"
+            notify_all(error_msg)
+            
+    t = threading.Thread(target=background_task)
+    t.start()
+    return jsonify({"status": "started"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), threaded=True)

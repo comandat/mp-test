@@ -28,5 +28,35 @@
     "password": "veto-uptown-barber@duck.coM1",
     "phone": "0731162153",
     "created_at": "2026-04-07T18:00:42.495435+00:00"
+  },
+  {
+    "email": "drench-saint-wise@duck.com",
+    "password": "drench-saint-wise@duck.coM1",
+    "phone": "0731295654",
+    "created_at": "2026-04-07T21:23:38.598468+00:00"
+  },
+  {
+    "email": "rocky-defog-flame@duck.com",
+    "password": "rocky-defog-flame@duck.coM1",
+    "phone": "0731295663",
+    "created_at": "2026-04-07T21:27:59.702933+00:00"
+  },
+  {
+    "email": "igloo-five-fancied@duck.com",
+    "password": "igloo-five-fancied@duck.coM1",
+    "phone": "0769346843",
+    "created_at": "2026-04-07T21:28:14.867405+00:00"
+  },
+  {
+    "email": "skier-hardy-good@duck.com",
+    "password": "skier-hardy-good@duck.coM1",
+    "phone": "0784110374",
+    "created_at": "2026-04-07T21:29:43.143458+00:00"
+  },
+  {
+    "email": "elusive-jab-chaps@duck.com",
+    "password": "elusive-jab-chaps@duck.coM1",
+    "phone": "0761549870",
+    "created_at": "2026-04-08T07:09:40.499144+00:00"
   }
 ]

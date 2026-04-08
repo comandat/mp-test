@@ -24,6 +24,8 @@ class SMSTimeout(SMSProviderError):
 
 def _herosms_request(config: Config, params: dict) -> str:
     all_params = {"api_key": config.herosms_api_key, **params}
+    if getattr(config, "smspool_mode", False):
+        all_params["setting"] = "smspool"
     response = httpx.get(config.herosms_base_url, params=all_params, timeout=30)
     response.raise_for_status()
     return response.text.strip()

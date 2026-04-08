@@ -2,6 +2,7 @@ import logging
 import random
 import time
 import re
+import base64
 from typing import Callable, Optional
 
 from config import Config
@@ -13,6 +14,7 @@ from sms_provider import (
     cancel_activation,
     check_balance,
     SMSProviderError,
+    SMSTimeout,
 )
 from browser_engine import create_browser
 from storage import save_account
@@ -227,35 +229,60 @@ def _acquire_phone_and_verify(config: Config, page, emit: Callable) -> tuple[str
             _random_delay(2, 4)
             continue
             
-        msg = f"Telefon {formatted_phone} acceptat. Se așteaptă SMS..."
+        msg = f"Telefon {formatted_phone} acceptat. Se așteaptă SMS (max 5 min)..."
         logger.info(msg)
         emit(msg)
         try:
             sms_code = poll_sms_code(config, activation_id)
             # Remove complete_activation(id) here, so we keep it open for second SMS!
             return formatted_phone, sms_code, activation_id
-        except Exception as e:
-            logger.error(f"SMS failed/timed out: {e}")
+        except SMSTimeout:
+            logger.warning("Primul timeout s-a incheiat. Incercam sa apasam pe Retransmite SMS.")
+            emit("Timpul inițial (5 min) a expirat fără mesaj. Apăsăm pe retrimitere SMS...")
             try:
-                cancel_activation(config, activation_id)
-            except Exception:
-                pass
-            
-            logger.info("Going back to request a new phone number")
-            emit("Timpul de așteptare SMS a expirat. Încercăm un alt număr...")
-            page.go_back(wait_until="domcontentloaded")
-            _random_delay(2, 4)
+                # Căutăm butonul de retransmitere și îl apăsăm
+                retransmit_btn = page.locator("button:has-text('Retransmite SMS')")
+                retransmit_btn.click(timeout=10000)
+                
+                emit("Am cerut retrimiterea de la eMAG. Așteptăm încă 5 minute...")
+                logger.info("Polling for sms code again...")
+                sms_code = poll_sms_code(config, activation_id)
+                return formatted_phone, sms_code, activation_id
+            except Exception as retry_e:
+                logger.error(f"Eroare la a doua astepare/retransmitere: {retry_e}")
+                emit("Eșec definitiv la recepționare cod.")
+        except Exception as e:
+            logger.error(f"SMS failed generally: {e}")
 
-    raise RuntimeError(
-        f"Failed to find an accepted phone number with a valid SMS after {config.max_phone_retries} attempts"
-    )
+        # Daca am ajuns aici, a esuat ambele asteptari sau a apărut o excepție
+        try:
+            cancel_activation(config, activation_id)
+        except Exception:
+            pass
+        
+        logger.warning("Nu s-a putut obține codul. Se anulează. Solicităm o sesiune complet nouă.")
+        emit("Nu s-a putut obține codul. Se anulează.")
+        raise SMSCriticalFailureError("Zero SMS arrived after both timeouts.")
 
 
-def create_account(config: Config, status_callback: Optional[Callable[[str], None]] = None) -> dict:
-    def emit(msg: str):
-        if status_callback:
-            status_callback(msg)
+class SMSCriticalFailureError(Exception):
+    pass
 
+# Globals used for forceful interruption
+_current_browser_ref = None
+
+def force_stop():
+    global _current_browser_ref
+    if _current_browser_ref is not None:
+        try:
+            _current_browser_ref.close()
+        except:
+            pass
+        _current_browser_ref = None
+
+def _run_single_session(config: Config, emit: Callable) -> dict:
+    global _current_browser_ref
+    
     balance = check_balance(config)
     logger.info(f"HeroSMS balance: ${balance}")
 
@@ -268,34 +295,89 @@ def create_account(config: Config, status_callback: Optional[Callable[[str], Non
     logger.info(f"Name: {full_name}")
 
     emit(f"Pornire browser automat minimal...")
-    with create_browser(config) as page:
-        emit("Se introduce email-ul...")
-        _step_enter_email(page, config, email)
-        
-        emit("Se completează formularul cu datele personale...")
-        _step_fill_registration(page, full_name, password)
+    with create_browser(config) as browser_and_page:
+        _current_browser_ref = browser_and_page.context.browser
 
-        formatted_phone, sms_code, activation_id = _acquire_phone_and_verify(config, page, emit)
+        try:
+            emit("Se introduce email-ul...")
+            _step_enter_email(browser_and_page, config, email)
+            
+            emit("Se completează formularul cu datele personale...")
+            _step_fill_registration(browser_and_page, full_name, password)
 
-        emit(f"S-a primit SMS! Introducem codul {sms_code}...")
-        _step_enter_sms_code(page, sms_code)
-        
-        emit("Se verifică bifa Genius...")
-        _step_accept_genius(page)
+            formatted_phone, sms_code, activation_id = _acquire_phone_and_verify(config, browser_and_page, emit)
 
-        account_data = {
-            "email": email,
-            "password": password,
-            "phone": formatted_phone,
-            "name": full_name,
-            "activation_id": activation_id
-        }
+            emit(f"S-a primit SMS! Introducem codul {sms_code}...")
+            _step_enter_sms_code(browser_and_page, sms_code)
+            
+            emit("Se verifică bifa Genius...")
+            _step_accept_genius(browser_and_page)
 
-        save_account(config, email, password, formatted_phone)
-        emit("Cont creat cu succes! Salvat pe server.")
+            account_data = {
+                "email": email,
+                "password": password,
+                "phone": formatted_phone,
+                "name": full_name,
+                "activation_id": activation_id
+            }
 
-        logger.info("=" * 60)
-        logger.info("CONT CREAT CU SUCCES!")
-        logger.info("=" * 60)
+            save_account(config, email, password, formatted_phone)
+            emit("Cont creat cu succes! Salvat pe server.")
 
-        return account_data
+            logger.info("=" * 60)
+            logger.info("CONT CREAT CU SUCCES!")
+            logger.info("=" * 60)
+
+            return account_data
+
+        except Exception as e:
+            e_msg = str(e).lower()
+            if "target closed" in e_msg or "context destroyed" in e_msg or "browser has been closed" in e_msg:
+                raise RuntimeError("Proces Oprit Forțat")
+            
+            # Daca e SMSCriticalFailureError, o lăsăm să iasă curat ca să prindă retry-ul în create_account
+            if isinstance(e, SMSCriticalFailureError):
+                raise e
+
+            try:
+                emit("Eroare întâmpinată. Se capturează screenshot...")
+                screenshot_bytes = browser_and_page.screenshot()
+                import base64
+                b64_image = base64.b64encode(screenshot_bytes).decode('utf-8')
+                emit(f"SCREENSHOT:{b64_image}")
+            except Exception as ss_e:
+                logger.error(f"Failed to capture screenshot: {ss_e}")
+            
+            raise e
+        finally:
+            _current_browser_ref = None
+
+def create_account(config: Config, status_callback: Optional[Callable[[str], None]] = None) -> dict:
+    def emit(msg: str):
+        if status_callback:
+            status_callback(msg)
+            
+    for attempt in range(1, 3):  # Max 2 incercari complete (1 + 1 retry)
+        try:
+            current_config = config
+            if attempt > 1:
+                from dataclasses import replace
+                emit(f"Începem din nou de la zero (Sesiunea {attempt}/2) folosind SMSPool API...")
+                current_config = replace(config, 
+                    herosms_base_url="https://api.smspool.net/stubs/handler_api", 
+                    herosms_api_key="Ibl1Q0EpQ03BbfwzuTbE51McCgPlRxrw",
+                    herosms_service_code="817",
+                    herosms_country_id=13,
+                    smspool_mode=True
+                )
+            return _run_single_session(current_config, emit)
+        except SMSCriticalFailureError:
+            if attempt == 1:
+                emit("Eșec SMS prelungit. Închidem browser-ul complet și pornim o sesiune cu totul nouă (1 reîncercare rămasă)...")
+                logger.warning("SMS critical failure. Restarting entire session once.")
+                import time
+                time.sleep(3)
+                continue
+            else:
+                emit("A eșuat și a doua sesiune. Renunțăm.")
+                raise RuntimeError("Eșec la primirea SMS-ului în multiple sesiuni noi.")
