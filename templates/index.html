@@ -345,8 +345,8 @@
             <p>Automatizare completă via HeroSMS & Camoufox</p>
         </div>
 
-        <button class="sec-btn" onclick="window.open('https://url-provider.aptoide.com/download/cGFja2FnZV9uYW1lPXJvLmVtYWcuYW5kcm9pZCZhcGtfbWQ1c3VtPWVhNWZhOGVmNDc1NmVmM2EyMjBhOGY5ZTA1MTFmYzBkJnZlcmNvZGU9MzI1JmxvY2FsZT1lbl9HQiZhYWI9MSZxPWJYbERVRlU5WVhKdE5qUXRkamhoTEdGeWJXVmhZbWt0ZGpkaExHRnliV1ZoWW1rbWJHVmhibUpoWTJzOU1BJnVybF9hcHRvaWRlPWh0dHBzJTNBJTJGJTJGcG9vbC5hcGsuYXB0b2lkZS5jb20lMkZhcHRvaWRlLXdlYiUyRnJvLWVtYWctYW5kcm9pZC0zMjUtNzQxNTU2MTEtZWE1ZmE4ZWY0NzU2ZWYzYTIyMGE4ZjllMDUxMWZjMGQuYXBr', '_blank')" style="margin-top: 0; margin-bottom: 20px; background: rgba(0, 94, 184, 0.1); border-color: rgba(0, 94, 184, 0.3);">
-            <i class="fa-brands fa-android" style="color: #a4c639;"></i> Descarcă emag.apk
+        <button class="sec-btn" onclick="window.open('https://www.auroraoss.com/downloads/AuroraStore/Latest/latest.apk', '_blank')" style="margin-top: 0; margin-bottom: 20px; background: rgba(0, 94, 184, 0.1); border-color: rgba(0, 94, 184, 0.3);">
+            <i class="fa-brands fa-android" style="color: #a4c639;"></i> Descarcă Aurora Store.apk
         </button>
 
         <button id="mainBtn" class="main-btn" onclick="startGeneration()">
@@ -395,6 +395,18 @@
             <button class="sec-btn" onclick="copyText('valSms2')" style="margin-top: 0;">
                 <i class="fa-regular fa-copy"></i> Copiază Codul
             </button>
+
+            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px dashed var(--glass-border);">
+                <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 10px;"><i class="fa-solid fa-location-dot" style="color: #58a6ff;"></i> Adresă livrări generată:</p>
+                <div class="data-row" style="margin-bottom: 8px;">
+                    <div class="data-value" id="valAddress" style="font-family: inherit; font-size: 14px;">-</div>
+                    <button class="copy-btn" onclick="copyText('valAddress')"><i class="fa-regular fa-copy"></i></button>
+                </div>
+                <button class="sec-btn" onclick="generateAddress()" style="margin-top: 8px; font-size: 13px; padding: 10px;">
+                    <i class="fa-solid fa-arrows-rotate"></i> Generează altă adresă
+                </button>
+            </div>
+
             <p style="margin-top: 20px; font-size: 13px; color: var(--text-muted); opacity: 0.8;">
                 Gata! Procesul s-a încheiat. Reîncarcă pagina pentru a crea un cont nou.
             </p>
@@ -464,6 +476,7 @@
                     document.getElementById('logOutput').innerText = "Al doilea SMS a ajuns și s-a închis!";
                     document.getElementById('logOutput').style.color = "var(--success)";
                     document.getElementById('waitSmsBtn').innerHTML = '<i class="fa-solid fa-check"></i> Finalizat';
+                    generateAddress();
                 } else {
                     document.getElementById('logOutput').innerText = msg;
                     if(document.getElementById('logOutput').style.color === "var(--success)") {
@@ -546,6 +559,32 @@
             setTimeout(() => {
                 toast.classList.remove('show');
             }, 2500);
+        }
+
+        function generateAddress() {
+            const strazi = [
+                "Iuliu Maniu", "Drumul Taberei", "Bd. Timișoara", "Bd. Gheorghe Sincai",
+                "Calea Giulești", "Virtuții", "Drumul Sării", "Prelungirea Ghencea",
+                "Ghencea", "Eroii Revoluției", "Aleea Istru", "Aleea Compozitorilor",
+                "Aleea Lacul Morii", "Cpt. Aviator Pârvu Constantin", "Bd. Brâncuși",
+                "Meteorilor", "Apusului", "Lujerului", "Gorjului", "Veteranilor",
+                "Dealul Tugulea", "Aleea Cetatea de Baltă", "Sibiu", "Dl. Golești",
+                "Preciziei", "Uverturii", "Aleea Parva", "Dl. Câmpina",
+                "Aleea Lunca Bradului", "Tecuciului"
+            ];
+
+            const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+            const pick = arr => arr[rand(0, arr.length - 1)];
+
+            const strada = pick(strazi);
+            const nr = rand(1, 120);
+            const bloc = pick(["A", "B", "C", "D", "E", "F", "G", "H"]) + rand(1, 20);
+            const scara = rand(1, 5);
+            const etaj = rand(0, 4);
+            const ap = rand(1, 80);
+
+            const adresa = `${strada} nr. ${nr}, bl. ${bloc}, sc. ${scara}, et. ${etaj}, ap. ${ap}`;
+            document.getElementById('valAddress').innerText = adresa;
         }
     </script>
 </body>
