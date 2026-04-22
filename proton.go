@@ -158,7 +158,9 @@ func (p *ProtonSync) scanInbox(ctx context.Context) error {
 		return fmt.Errorf("no client")
 	}
 
-	subjectHints := []string{"comand", "ajuns", "easybox", "predat"}
+	// Subject hints cover both eMAG-sent emails (which always include
+	// "comandă"/"predată") and Sameday-sent emails (titled "Notificare NN").
+	subjectHints := []string{"comand", "ajuns", "easybox", "predat", "notificare"}
 	seen := map[string]proton.MessageMetadata{}
 
 	for _, hint := range subjectHints {

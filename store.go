@@ -365,7 +365,10 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 		}
 	}
 
-	// Arrived email carries PIN, QR, deadline, easybox info — overwrite with latest.
+	// Arrived email carries PIN, QR, deadline, easybox info. Reminders ("te mai
+	// așteaptă") repeat the same data minus the easybox address — only overwrite
+	// fields when the new value is non-empty so a later reminder does not erase
+	// info captured from the original arrival.
 	if kind == "arrived" {
 		var deadline sql.NullString
 		if p.PickupDeadline != nil {
@@ -373,9 +376,19 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE orders
-			SET easybox_name=?, easybox_address=?, pickup_deadline=?, pin_code=?, qr_url=?, updated_at=?
-			WHERE order_number=?`,
-			p.EasyboxName, p.EasyboxAddress, deadline, p.PinCode, p.QRURL, now, p.OrderNumber)
+			SET easybox_name    = CASE WHEN ? <> '' THEN ? ELSE easybox_name END,
+			    easybox_address = CASE WHEN ? <> '' THEN ? ELSE easybox_address END,
+			    pickup_deadline = COALESCE(?, pickup_deadline),
+			    pin_code        = CASE WHEN ? <> '' THEN ? ELSE pin_code END,
+			    qr_url          = CASE WHEN ? <> '' THEN ? ELSE qr_url END,
+			    updated_at      = ?
+			WHERE order_number  = ?`,
+			p.EasyboxName, p.EasyboxName,
+			p.EasyboxAddress, p.EasyboxAddress,
+			deadline,
+			p.PinCode, p.PinCode,
+			p.QRURL, p.QRURL,
+			now, p.OrderNumber)
 		if err != nil {
 			return err
 		}

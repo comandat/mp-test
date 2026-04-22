@@ -178,6 +178,55 @@ func TestParseArrivedMarketplaceRejected(t *testing.T) {
 	}
 }
 
+// reminderHTML mirrors the Sameday "te mai așteaptă până" reminder email
+// (sent for both eMAG-direct and Marketplace orders that are still sitting in
+// the easybox close to expiry).
+const reminderHTML = `<html><body>
+<p>Hei, coletul <strong> eMAG Marketplace - CIPRICOM SRL,eMAG numărul 485474958</strong> te mai așteaptă până Joi, 23 Apr. ora 7:30, în easybox GEMA Amada Balroom, program L-D 00:00-23:59.
+Folosește QR-ul sau PIN-ul de mai jos pentru a deschide sertarul.<br><br></p>
+<img src="https://sameday.ro/locker/qr-image/LUKJHZA" alt="" width="200">
+<p>Sau tastează pe ecranul easybox codul:</p>
+<table class="easyboxCode">
+<tr>
+<td><span>L</span></td><td></td><td><span>U</span></td><td></td><td><span>K</span></td><td></td><td><span>J</span></td><td></td><td><span>H</span></td><td></td><td><span>Z</span></td><td></td><td><span>A</span></td>
+</tr>
+</table>
+</body></html>`
+
+func TestClassifyReminder(t *testing.T) {
+	body := htmlToText(reminderHTML)
+	got := ClassifyEmail("Notificare 78", body)
+	if got != "arrived" {
+		t.Errorf("reminder should classify as arrived, got %q", got)
+	}
+}
+
+func TestParseReminder(t *testing.T) {
+	body := htmlToText(reminderHTML)
+	pe, err := ParseArrived(reminderHTML, body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if pe.OrderNumber != "485474958" {
+		t.Errorf("order: got %q", pe.OrderNumber)
+	}
+	if pe.PinCode != "LUKJHZA" {
+		t.Errorf("pin: got %q", pe.PinCode)
+	}
+	if pe.QRURL == "" || !strings.Contains(pe.QRURL, "LUKJHZA") {
+		t.Errorf("qr url: %q", pe.QRURL)
+	}
+	if !strings.Contains(pe.EasyboxName, "GEMA Amada Balroom") {
+		t.Errorf("easybox name: %q", pe.EasyboxName)
+	}
+	if pe.PickupDeadline == nil {
+		t.Fatalf("deadline is nil")
+	}
+	if pe.PickupDeadline.Day() != 23 || pe.PickupDeadline.Month().String() != "April" || pe.PickupDeadline.Hour() != 7 || pe.PickupDeadline.Minute() != 30 {
+		t.Errorf("deadline: %v", pe.PickupDeadline)
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

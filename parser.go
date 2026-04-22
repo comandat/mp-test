@@ -25,14 +25,22 @@ type ParsedEmail struct {
 var (
 	reConfirmationSubject = regexp.MustCompile(`(?i)Confirmare\s+(?:înregistrare|inregistrare)\s+comand[ăa]\s*#?\s*(\d+)`)
 	reShippedSubject      = regexp.MustCompile(`(?i)Comanda\s+ta\s*#?\s*(\d+)\s+a\s+fost\s+predat[ăa]\s+curierului`)
-	reArrivedBody         = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+([^.\n\r<]+)`)
-	reMarketplaceArrived  = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+Marketplace\s*-[^\n]*,\s*eMAG\s+num[ăa]rul`)
-	reQty                 = regexp.MustCompile(`(\d+)\s*buc`)
-	rePriceLei            = regexp.MustCompile(`(?i)(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
-	reTotalLei            = regexp.MustCompile(`(?i)Total\s*:?\s*(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
-	reDeadline            = regexp.MustCompile(`(?i)p[âa]n[ăa]\s+([A-Za-zÎÂȘȚăâîșț]+),?\s+(\d{1,2})\s+([A-Za-zăâîșț]+)\.?\s+ora\s+(\d{1,2}):(\d{2})`)
-	reQRURL               = regexp.MustCompile(`(?i)(https?://[^"'\s]*?/qr-image/([A-Z0-9]+))`)
-	reQRImg               = regexp.MustCompile(`(?i)<img[^>]+src="(https?://[^"]*?qr[^"]*)"`)
+	// Arrival: "Comanda ta eMAG numărul X a ajuns în easybox Y"
+	reArrivedBody = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+([^.\n\r<]+)`)
+	// Marketplace arrival (skipped — not the products user cares about):
+	// "Comanda ta eMAG Marketplace - SELLER,eMAG numărul X a ajuns ..."
+	reMarketplaceArrived = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+Marketplace\s*-[^\n]*,\s*eMAG\s+num[ăa]rul`)
+	// Reminder (kept regardless of marketplace — it means the package is sitting in
+	// the easybox close to expiry and the user needs to act):
+	// "coletul eMAG [Marketplace - SELLER,eMAG] numărul X te mai așteaptă până ... în easybox Y"
+	reReminderBody = regexp.MustCompile(`(?i)coletul\s+eMAG(?:\s+Marketplace[^,]*,\s*eMAG)?\s+num[ăa]rul\s+(\d+)\s+te\s+mai\s+a[șs]teapt[ăa]\s+p[âa]n[ăa][^\n\r<]+?[îi]n\s+easybox\s+([^,\n\r<]+)`)
+
+	reQty      = regexp.MustCompile(`(\d+)\s*buc`)
+	rePriceLei = regexp.MustCompile(`(?i)(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
+	reTotalLei = regexp.MustCompile(`(?i)Total\s*:?\s*(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
+	reDeadline = regexp.MustCompile(`(?i)p[âa]n[ăa]\s+([A-Za-zÎÂȘȚăâîșț]+),?\s+(\d{1,2})\s+([A-Za-zăâîșț]+)\.?\s+ora\s+(\d{1,2}):(\d{2})`)
+	reQRURL    = regexp.MustCompile(`(?i)(https?://[^"'\s]*?/qr-image/([A-Z0-9]+))`)
+	reQRImg    = regexp.MustCompile(`(?i)<img[^>]+src="(https?://[^"]*?qr[^"]*)"`)
 )
 
 var roMonths = map[string]time.Month{
@@ -58,7 +66,12 @@ func ClassifyEmail(subject, textBody string) string {
 	if reShippedSubject.MatchString(subject) {
 		return "shipped"
 	}
-	// Arrived emails (from Sameday) — identify by body content.
+	// Sameday reminder ("te mai așteaptă") — kept for both eMAG and Marketplace,
+	// because it means the package is in the easybox waiting to expire.
+	if reReminderBody.MatchString(textBody) {
+		return "arrived"
+	}
+	// Arrival ("a ajuns") — only for eMAG-direct, marketplace arrivals skipped.
 	if reMarketplaceArrived.MatchString(textBody) {
 		return ""
 	}
@@ -100,16 +113,29 @@ func ParseShipped(subject, htmlBody string) (*ParsedEmail, error) {
 	return pe, nil
 }
 
-// ParseArrived handles the Sameday "a ajuns în easybox" email.
+// ParseArrived handles both Sameday variants:
+//   - arrival: "Comanda ta eMAG numărul X a ajuns în easybox Y"
+//   - reminder: "coletul eMAG ... numărul X te mai așteaptă până ... în easybox Y"
+//
+// Marketplace arrivals are rejected; marketplace reminders are kept (the user
+// still needs to pick the package up before it expires).
 func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
-	if reMarketplaceArrived.MatchString(textBody) {
-		return nil, fmt.Errorf("arrived: marketplace (skip)")
+	var orderNum, easyboxFromBody string
+	if m := reReminderBody.FindStringSubmatch(textBody); m != nil {
+		orderNum = m[1]
+		easyboxFromBody = strings.TrimSpace(m[2])
+	} else {
+		if reMarketplaceArrived.MatchString(textBody) {
+			return nil, fmt.Errorf("arrived: marketplace (skip)")
+		}
+		m := reArrivedBody.FindStringSubmatch(textBody)
+		if m == nil {
+			return nil, fmt.Errorf("arrived: no order number")
+		}
+		orderNum = m[1]
+		easyboxFromBody = strings.TrimSpace(strings.TrimSuffix(m[2], "."))
 	}
-	m := reArrivedBody.FindStringSubmatch(textBody)
-	if m == nil {
-		return nil, fmt.Errorf("arrived: no order number")
-	}
-	pe := &ParsedEmail{Kind: "arrived", OrderNumber: m[1]}
+	pe := &ParsedEmail{Kind: "arrived", OrderNumber: orderNum}
 
 	// Deadline
 	if dm := reDeadline.FindStringSubmatch(textBody); dm != nil {
@@ -167,14 +193,14 @@ func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
 	}
 
 	// Easybox name + address: take the <p> next to the <img alt="pin_easybox">
+	// (only present in arrival emails; reminders only mention easybox name inline).
 	if doc != nil {
 		name, addr := extractEasyboxFromHTML(doc)
 		pe.EasyboxName = name
 		pe.EasyboxAddress = addr
 	}
-	// If still empty, fall back to arrived body match (captures trailing text after "a ajuns în")
 	if pe.EasyboxName == "" {
-		pe.EasyboxName = strings.TrimSpace(strings.TrimSuffix(m[2], "."))
+		pe.EasyboxName = easyboxFromBody
 	}
 
 	return pe, nil
