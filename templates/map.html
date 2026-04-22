@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Harta coletelor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #map { position:absolute; top:0; left:0; right:0; bottom:0; }
+  .back-btn {
+    position:absolute; top:16px; left:16px; z-index:1000;
+    background:#fff; padding:10px 16px; border-radius:999px; text-decoration:none;
+    color:#111; font-weight:600; box-shadow:0 2px 8px rgba(0,0,0,0.2);
+  }
+  .empty {
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    text-align:center; color:#666; z-index:500; padding:20px;
+  }
+</style>
+</head>
+<body>
+<a class="back-btn" href="/">← Înapoi</a>
+<div id="map"></div>
+<div class="empty" id="empty" style="display:none">
+  <p><strong>Niciun colet activ cu locație cunoscută.</strong></p>
+  <p>Harta se populează automat când un colet ajunge la easybox.</p>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+(async function() {
+  const map = L.map('map').setView([44.4268, 26.1025], 11); // Bucharest center default
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap',
+    maxZoom: 19
+  }).addTo(map);
+
+  const res = await fetch('/api/pins');
+  const pins = await res.json();
+  if (!pins || pins.length === 0) {
+    document.getElementById('empty').style.display = 'block';
+    return;
+  }
+  const markers = [];
+  pins.forEach(p => {
+    const m = L.marker([p.lat, p.lon]).addTo(map);
+    const html = `
+      <div style="min-width:180px">
+        <div style="font-weight:600"><a href="/order/${p.order_number}" style="color:#0079D7">#${p.order_number}</a></div>
+        <div>${p.easybox_name || ''}</div>
+        <div style="color:#555">${p.easybox_address || ''}</div>
+        ${p.status === 'GataDeRidicare' ? '<div style="margin-top:6px;color:#009B28;font-weight:600">Gata de ridicare</div>' : ''}
+      </div>`;
+    m.bindPopup(html);
+    markers.push(m);
+  });
+  if (markers.length > 0) {
+    const group = L.featureGroup(markers);
+    map.fitBounds(group.getBounds().pad(0.2));
+  }
+})();
+</script>
+</body>
+</html>

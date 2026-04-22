@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>#{{.Order.OrderNumber}}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="back">←</a>
+  <h1>#{{.Order.OrderNumber}}</h1>
+  <span class="status-pill {{statusClass .Order.Status}}">{{statusLabel .Order.Status}}</span>
+</header>
+
+<main class="container">
+  {{with .Order}}
+
+  {{if eq .Status "GataDeRidicare"}}
+  <section class="pickup">
+    {{if .QRURL}}
+    <div class="qr-wrap">
+      <img src="{{.QRURL}}" alt="QR code" class="qr">
+    </div>
+    {{end}}
+
+    {{if .PinCode}}
+    <div class="pin-wrap">
+      <div class="pin-label">PIN:</div>
+      <div class="pin" id="pin">{{.PinCode}}</div>
+      <button type="button" class="btn-ghost" onclick="copyPin()">Copiază</button>
+    </div>
+    {{end}}
+
+    {{if .PickupDeadline}}
+    <div class="deadline-big">
+      <div class="muted small">Ridică până</div>
+      <div>{{formatDeadline .PickupDeadline}}</div>
+      <div class="countdown">{{relativeDeadline .PickupDeadline}}</div>
+    </div>
+    {{end}}
+  </section>
+  {{end}}
+
+  {{if .EasyboxName}}
+  <section class="easybox">
+    <div class="muted small">Easybox</div>
+    <div class="eb-name">{{.EasyboxName}}</div>
+    {{if .EasyboxAddress}}
+    <div class="eb-addr">{{.EasyboxAddress}}</div>
+    {{end}}
+  </section>
+  {{end}}
+
+  {{if .Products}}
+  <section class="products">
+    <div class="muted small">Produse</div>
+    {{range .Products}}
+    <div class="product">
+      {{if .ImageURL}}
+      <img src="{{.ImageURL}}" alt="" class="prod-img">
+      {{end}}
+      <div class="prod-info">
+        <div class="prod-name">{{.Name}}</div>
+        <div class="muted small">{{.Qty}} buc · {{lei .LineTotalBani}}</div>
+      </div>
+    </div>
+    {{end}}
+  </section>
+  {{end}}
+
+  <section class="total-row">
+    <div>Total de plată</div>
+    <div class="total">{{lei .TotalBani}}</div>
+  </section>
+
+  {{if eq .Status "GataDeRidicare"}}
+  <form method="POST" action="/order/{{.OrderNumber}}/confirm" onsubmit="return confirm('Confirmi că ai ridicat coletul?');" class="confirm-form">
+    <button type="submit" class="btn-primary btn-block">Confirmă ridicarea</button>
+  </form>
+  {{end}}
+
+  {{end}}
+</main>
+
+<script>
+function copyPin() {
+  const t = document.getElementById('pin').innerText;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(t).then(() => {
+      const b = event.target;
+      const old = b.innerText;
+      b.innerText = 'Copiat!';
+      setTimeout(() => { b.innerText = old; }, 1500);
+    });
+  }
+}
+</script>
+</body>
+</html>

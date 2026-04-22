@@ -36,7 +36,7 @@ type Order struct {
 	EasyboxAddress  string
 	PickupDeadline  *time.Time
 	PinCode         string
-	QRAttachmentID  string
+	QRURL           string
 	TotalBani       int64
 	Lat             *float64
 	Lon             *float64
@@ -80,7 +80,7 @@ func (s *Store) migrate() error {
 			easybox_address TEXT,
 			pickup_deadline TEXT,
 			pin_code TEXT,
-			qr_attachment_id TEXT,
+			qr_url TEXT,
 			total_bani INTEGER NOT NULL DEFAULT 0,
 			lat REAL,
 			lon REAL,
@@ -104,12 +104,6 @@ func (s *Store) migrate() error {
 			kind TEXT,
 			order_number TEXT,
 			processed_at TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS attachments(
-			id TEXT PRIMARY KEY,
-			order_number TEXT,
-			content_type TEXT,
-			bytes BLOB NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS geocode_cache(
 			address TEXT PRIMARY KEY,
@@ -197,29 +191,12 @@ func (s *Store) MarkProcessed(ctx context.Context, messageID, kind, orderNum str
 	return err
 }
 
-// ---------- Attachments ----------
-
-func (s *Store) SaveAttachment(ctx context.Context, id, orderNum, contentType string, data []byte) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO attachments(id, order_number, content_type, bytes)
-		VALUES(?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET bytes=excluded.bytes, content_type=excluded.content_type`,
-		id, orderNum, contentType, data)
-	return err
-}
-
-func (s *Store) GetAttachment(ctx context.Context, id string) (contentType string, data []byte, err error) {
-	row := s.db.QueryRowContext(ctx, `SELECT content_type, bytes FROM attachments WHERE id=?`, id)
-	err = row.Scan(&contentType, &data)
-	return
-}
-
 // ---------- Orders ----------
 
 func (s *Store) GetOrder(ctx context.Context, orderNum string) (*Order, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT order_number, status, COALESCE(easybox_name,''), COALESCE(easybox_address,''),
-		       pickup_deadline, COALESCE(pin_code,''), COALESCE(qr_attachment_id,''),
+		       pickup_deadline, COALESCE(pin_code,''), COALESCE(qr_url,''),
 		       total_bani, lat, lon, picked_up_at, created_at, updated_at
 		FROM orders WHERE order_number=?`, orderNum)
 	var o Order
@@ -228,7 +205,7 @@ func (s *Store) GetOrder(ctx context.Context, orderNum string) (*Order, error) {
 	var createdStr, updatedStr string
 	var status string
 	if err := row.Scan(&o.OrderNumber, &status, &o.EasyboxName, &o.EasyboxAddress,
-		&deadlineStr, &o.PinCode, &o.QRAttachmentID,
+		&deadlineStr, &o.PinCode, &o.QRURL,
 		&o.TotalBani, &lat, &lon, &pickedStr, &createdStr, &updatedStr); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -396,9 +373,9 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE orders
-			SET easybox_name=?, easybox_address=?, pickup_deadline=?, pin_code=?, qr_attachment_id=?, updated_at=?
+			SET easybox_name=?, easybox_address=?, pickup_deadline=?, pin_code=?, qr_url=?, updated_at=?
 			WHERE order_number=?`,
-			p.EasyboxName, p.EasyboxAddress, deadline, p.PinCode, p.QRAttachmentID, now, p.OrderNumber)
+			p.EasyboxName, p.EasyboxAddress, deadline, p.PinCode, p.QRURL, now, p.OrderNumber)
 		if err != nil {
 			return err
 		}
@@ -427,12 +404,6 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 func (s *Store) MarkPickedUp(ctx context.Context, orderNum string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE orders SET picked_up_at=?, updated_at=? WHERE order_number=?`,
 		time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), orderNum)
-	return err
-}
-
-func (s *Store) SetCoords(ctx context.Context, orderNum string, lat, lon float64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE orders SET lat=?, lon=?, updated_at=? WHERE order_number=?`,
-		lat, lon, time.Now().UTC().Format(time.RFC3339), orderNum)
 	return err
 }
 

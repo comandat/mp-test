@@ -19,21 +19,20 @@ type ParsedEmail struct {
 	EasyboxAddress string
 	PickupDeadline *time.Time
 	PinCode        string
-	QRContentID    string // cid referenced in the HTML near PIN block
-	QRAttachmentID string // filled later by proton fetch layer
+	QRURL          string
 }
 
 var (
 	reConfirmationSubject = regexp.MustCompile(`(?i)Confirmare\s+(?:înregistrare|inregistrare)\s+comand[ăa]\s*#?\s*(\d+)`)
 	reShippedSubject      = regexp.MustCompile(`(?i)Comanda\s+ta\s*#?\s*(\d+)\s+a\s+fost\s+predat[ăa]\s+curierului`)
-	reArrivedBody         = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+([^\n\r]+)`)
+	reArrivedBody         = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+([^.\n\r<]+)`)
 	reMarketplaceArrived  = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+Marketplace\s*-[^\n]*,\s*eMAG\s+num[ăa]rul`)
-	rePriceLei            = regexp.MustCompile(`(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
 	reQty                 = regexp.MustCompile(`(\d+)\s*buc`)
+	rePriceLei            = regexp.MustCompile(`(?i)(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
+	reTotalLei            = regexp.MustCompile(`(?i)Total\s*:?\s*(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
 	reDeadline            = regexp.MustCompile(`(?i)p[âa]n[ăa]\s+([A-Za-zÎÂȘȚăâîșț]+),?\s+(\d{1,2})\s+([A-Za-zăâîșț]+)\.?\s+ora\s+(\d{1,2}):(\d{2})`)
-	rePinLabel            = regexp.MustCompile(`(?i)Sau\s+tasteaz[ăa]\s+pe\s+ecranul\s+easybox\s+codul\s*:`)
-	rePastrareLabel       = regexp.MustCompile(`(?i)p[ăa]strare\.`)
-	reCIDSrc              = regexp.MustCompile(`(?i)cid:([^"'\s>]+)`)
+	reQRURL               = regexp.MustCompile(`(?i)(https?://[^"'\s]*?/qr-image/([A-Z0-9]+))`)
+	reQRImg               = regexp.MustCompile(`(?i)<img[^>]+src="(https?://[^"]*?qr[^"]*)"`)
 )
 
 var roMonths = map[string]time.Month{
@@ -51,81 +50,78 @@ var roMonths = map[string]time.Month{
 	"dec": time.December, "decembrie": time.December,
 }
 
-// ClassifyEmail returns the kind of interesting email or "" if it's not one we track.
-func ClassifyEmail(subject, plainBody string) string {
-	if m := reConfirmationSubject.FindString(subject); m != "" {
+// ClassifyEmail decides the email type. Body is plain-text or HTML-stripped text.
+func ClassifyEmail(subject, textBody string) string {
+	if reConfirmationSubject.MatchString(subject) {
 		return "confirmation"
 	}
-	if m := reShippedSubject.FindString(subject); m != "" {
+	if reShippedSubject.MatchString(subject) {
 		return "shipped"
 	}
-	// Arrived: body-based. Reject marketplace arrivals first.
-	if reMarketplaceArrived.MatchString(plainBody) {
+	// Arrived emails (from Sameday) — identify by body content.
+	if reMarketplaceArrived.MatchString(textBody) {
 		return ""
 	}
-	if reArrivedBody.MatchString(plainBody) {
+	if reArrivedBody.MatchString(textBody) {
 		return "arrived"
 	}
 	return ""
 }
 
-// ParseConfirmation handles "Confirmare înregistrare comandă #NNN" emails.
-// Extracts products from groups that are delivered by eMAG (both
-// "Produse vândute de eMAG" and "Produse vândute de X și livrate de eMAG").
-// Ignores groups "Produse vândute și livrate de <non-eMAG>".
-func ParseConfirmation(subject string, htmlBody string) (*ParsedEmail, error) {
-	num := extractOrderNumber(subject, reConfirmationSubject)
-	if num == "" {
-		return nil, fmt.Errorf("confirmation: no order number in subject")
+// ParseConfirmation handles "Confirmare înregistrare comandă #NNN".
+// Keeps products in sections whose banner contains "livrate de eMAG".
+func ParseConfirmation(subject, htmlBody string) (*ParsedEmail, error) {
+	m := reConfirmationSubject.FindStringSubmatch(subject)
+	if m == nil {
+		return nil, fmt.Errorf("confirmation: no order number")
 	}
-	pe := &ParsedEmail{Kind: "confirmation", OrderNumber: num}
+	pe := &ParsedEmail{Kind: "confirmation", OrderNumber: m[1]}
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
 	if err != nil {
 		return nil, err
 	}
-	extractEmagDeliveredGroups(doc, pe, true)
+	extractEmagSections(doc, pe)
 	return pe, nil
 }
 
-// ParseShipped handles "Comanda ta #NNN a fost predată curierului" emails.
-// Here all groups listed are eMAG-delivered, so we keep every product.
-func ParseShipped(subject string, htmlBody string) (*ParsedEmail, error) {
-	num := extractOrderNumber(subject, reShippedSubject)
-	if num == "" {
-		return nil, fmt.Errorf("shipped: no order number in subject")
+// ParseShipped handles "Comanda ta #NNN a fost predată curierului".
+// All products listed here are eMAG-delivered by definition.
+func ParseShipped(subject, htmlBody string) (*ParsedEmail, error) {
+	m := reShippedSubject.FindStringSubmatch(subject)
+	if m == nil {
+		return nil, fmt.Errorf("shipped: no order number")
 	}
-	pe := &ParsedEmail{Kind: "shipped", OrderNumber: num}
+	pe := &ParsedEmail{Kind: "shipped", OrderNumber: m[1]}
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
 	if err != nil {
 		return nil, err
 	}
-	extractEmagDeliveredGroups(doc, pe, false)
+	extractEmagSections(doc, pe)
 	return pe, nil
 }
 
-// ParseArrived handles "Comanda ta eMAG numărul NNN a ajuns în easybox X" emails.
-// Extracts PIN, deadline, easybox name+address and QR content-id.
-func ParseArrived(htmlBody string, plainBody string) (*ParsedEmail, error) {
-	if reMarketplaceArrived.MatchString(plainBody) {
-		return nil, fmt.Errorf("arrived: marketplace, not eMAG-delivered")
+// ParseArrived handles the Sameday "a ajuns în easybox" email.
+func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
+	if reMarketplaceArrived.MatchString(textBody) {
+		return nil, fmt.Errorf("arrived: marketplace (skip)")
 	}
-	match := reArrivedBody.FindStringSubmatch(plainBody)
-	if match == nil {
-		return nil, fmt.Errorf("arrived: no order number in body")
+	m := reArrivedBody.FindStringSubmatch(textBody)
+	if m == nil {
+		return nil, fmt.Errorf("arrived: no order number")
 	}
-	pe := &ParsedEmail{Kind: "arrived", OrderNumber: match[1], EasyboxName: strings.TrimSpace(strings.TrimSuffix(match[2], "."))}
+	pe := &ParsedEmail{Kind: "arrived", OrderNumber: m[1]}
 
 	// Deadline
-	if dm := reDeadline.FindStringSubmatch(plainBody); dm != nil {
+	if dm := reDeadline.FindStringSubmatch(textBody); dm != nil {
 		day, _ := strconv.Atoi(dm[2])
 		hour, _ := strconv.Atoi(dm[4])
 		min, _ := strconv.Atoi(dm[5])
 		if mo, ok := roMonths[strings.ToLower(strings.TrimSuffix(dm[3], "."))]; ok {
-			now := time.Now()
 			loc, _ := time.LoadLocation("Europe/Bucharest")
 			if loc == nil {
 				loc = time.UTC
 			}
+			now := time.Now().In(loc)
 			t := time.Date(now.Year(), mo, day, hour, min, 0, 0, loc)
 			if t.Before(now.Add(-24 * time.Hour)) {
 				t = t.AddDate(1, 0, 0)
@@ -134,215 +130,244 @@ func ParseArrived(htmlBody string, plainBody string) (*ParsedEmail, error) {
 		}
 	}
 
-	// PIN: after "Sau tastează pe ecranul easybox codul:" collect next lines' first chars
-	pe.PinCode = extractPin(plainBody)
-
-	// Easybox name + address: first two non-empty lines after "păstrare."
-	name, addr := extractEasyboxInfo(plainBody)
-	if name != "" {
-		pe.EasyboxName = name
+	// QR URL — look for <img src="...qr-image/PIN..."> or generic "...qr..."
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
+	if err == nil {
+		doc.Find("img").EachWithBreak(func(_ int, img *goquery.Selection) bool {
+			src, ok := img.Attr("src")
+			if !ok || src == "" {
+				return true
+			}
+			lower := strings.ToLower(src)
+			if strings.Contains(lower, "/qr-image/") || strings.Contains(lower, "qr-code") || strings.Contains(lower, "qrcode") {
+				pe.QRURL = src
+				return false
+			}
+			return true
+		})
 	}
-	pe.EasyboxAddress = addr
+	if pe.QRURL == "" {
+		// Fallback regex on raw html.
+		if m := reQRURL.FindStringSubmatch(htmlBody); m != nil {
+			pe.QRURL = m[1]
+		} else if m := reQRImg.FindStringSubmatch(htmlBody); m != nil {
+			pe.QRURL = m[1]
+		}
+	}
 
-	// QR cid: find an <img src="cid:..."> near the PIN / pin_easybox reference
-	pe.QRContentID = extractQRContentID(htmlBody)
+	// PIN: prefer extracting from the QR URL (e.g. ".../qr-image/RP6JED9")
+	if pe.QRURL != "" {
+		if m := reQRURL.FindStringSubmatch(pe.QRURL); m != nil {
+			pe.PinCode = strings.ToUpper(m[2])
+		}
+	}
+	// Fallback: scan HTML for the stylized PIN table (7 boxes with single chars)
+	if pe.PinCode == "" && doc != nil {
+		pe.PinCode = extractStylizedPin(doc)
+	}
+
+	// Easybox name + address: take the <p> next to the <img alt="pin_easybox">
+	if doc != nil {
+		name, addr := extractEasyboxFromHTML(doc)
+		pe.EasyboxName = name
+		pe.EasyboxAddress = addr
+	}
+	// If still empty, fall back to arrived body match (captures trailing text after "a ajuns în")
+	if pe.EasyboxName == "" {
+		pe.EasyboxName = strings.TrimSpace(strings.TrimSuffix(m[2], "."))
+	}
 
 	return pe, nil
 }
 
-func extractOrderNumber(s string, re *regexp.Regexp) string {
-	m := re.FindStringSubmatch(s)
-	if m == nil || len(m) < 2 {
-		return ""
-	}
-	return m[1]
-}
+// ---------- helpers ----------
 
-func extractEmagDeliveredGroups(doc *goquery.Document, pe *ParsedEmail, requireLivrateDeEmag bool) {
-	// Find every heading/cell that announces a group, then walk forward for product rows.
-	text := doc.Text()
-	// Collect order total from last "Total:" near end of email (best-effort)
-	pe.TotalBani = extractLastTotal(text)
+// extractEmagSections walks <tr> rows in document order, tracks whether
+// the current section (delimited by "Produse ..." banners) is eMAG-delivered,
+// and collects products + the last "Total:" value seen inside an eligible section.
+func extractEmagSections(doc *goquery.Document, pe *ParsedEmail) {
+	eligible := false
+	seen := map[string]bool{}
+	var currentGroupLabel string
 
-	// Walk all elements; when we hit a header-like text, decide if the group is eMAG-delivered.
-	// Strategy: iterate over the text nodes by walking the DOM in order.
-	var groups []groupMatch
-	doc.Find("*").Each(func(_ int, sel *goquery.Selection) {
-		t := strings.TrimSpace(sel.Text())
-		if t == "" {
+	doc.Find("tr").Each(func(_ int, tr *goquery.Selection) {
+		if banner, label := matchBanner(tr); banner {
+			eligible = isEmagDelivered(label)
+			currentGroupLabel = label
 			return
 		}
-		if isGroupHeader(t) {
-			groups = append(groups, groupMatch{header: t, node: sel})
+		if !eligible {
+			return
+		}
+
+		text := strings.TrimSpace(tr.Text())
+		if text == "" {
+			return
+		}
+
+		// Capture total-ish rows (only when eligible)
+		if tm := reTotalLei.FindStringSubmatch(text); tm != nil && isTotalRow(text) {
+			v := priceToBani(tm[1])
+			if v > 0 {
+				pe.TotalBani = v
+			}
+		}
+
+		if p, ok := extractProductRow(tr); ok {
+			if seen[p.Name] {
+				return
+			}
+			seen[p.Name] = true
+			if p.SellerGroup == "" {
+				p.SellerGroup = sellerFromBanner(currentGroupLabel)
+			}
+			pe.Products = append(pe.Products, p)
 		}
 	})
-	// Deduplicate overlapping groups: keep only the deepest unique header text-to-node association.
-	seen := map[string]bool{}
-	for _, g := range groups {
-		key := normHeader(g.header)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
+}
 
-		emagDelivered := headerIsEmagDelivered(g.header)
-		if requireLivrateDeEmag && !emagDelivered {
-			continue
-		}
-		if !requireLivrateDeEmag && !emagDelivered {
-			// For shipped emails, still require "livrate de eMAG" to avoid false positives.
-			continue
-		}
-		prods := extractProductsAfter(g.node, g.header)
-		for i := range prods {
-			prods[i].SellerGroup = groupLabel(g.header)
-		}
-		pe.Products = append(pe.Products, prods...)
+func matchBanner(tr *goquery.Selection) (ok bool, text string) {
+	tds := tr.ChildrenFiltered("td")
+	if tds.Length() != 1 {
+		return false, ""
 	}
-}
-
-type groupMatch struct {
-	header string
-	node   *goquery.Selection
-}
-
-func normHeader(h string) string {
-	return strings.Join(strings.Fields(strings.ToLower(h)), " ")
-}
-
-func isGroupHeader(t string) bool {
+	t := strings.Join(strings.Fields(tds.Text()), " ")
+	if len(t) == 0 || len(t) > 150 {
+		return false, ""
+	}
 	lower := strings.ToLower(t)
-	// Exact-ish header match (not a paragraph that merely contains the phrase)
-	if len(t) > 200 {
-		return false
+	if !strings.HasPrefix(lower, "produse livrate") && !strings.HasPrefix(lower, "produse vândute") && !strings.HasPrefix(lower, "produse vandute") {
+		return false, ""
 	}
-	return strings.Contains(lower, "produse vândute") || strings.Contains(lower, "produse vandute")
+	return true, t
 }
 
-func headerIsEmagDelivered(h string) bool {
-	lower := strings.ToLower(h)
-	lower = strings.ReplaceAll(lower, "ă", "a")
-	lower = strings.ReplaceAll(lower, "â", "a")
-	lower = strings.ReplaceAll(lower, "î", "i")
-	lower = strings.ReplaceAll(lower, "ș", "s")
-	lower = strings.ReplaceAll(lower, "ț", "t")
-	// Accepted patterns:
-	//   "produse vandute de emag"
+func isEmagDelivered(banner string) bool {
+	l := strings.ToLower(banner)
+	l = strings.ReplaceAll(l, "ă", "a")
+	l = strings.ReplaceAll(l, "â", "a")
+	l = strings.ReplaceAll(l, "î", "i")
+	l = strings.ReplaceAll(l, "ș", "s")
+	l = strings.ReplaceAll(l, "ț", "t")
+	// Accept any banner that says something is delivered BY eMAG
+	//   "produse livrate de emag"
+	//   "produse vandute si livrate de emag"
 	//   "produse vandute de X si livrate de emag"
-	// Rejected:
-	//   "produse vandute si livrate de <non-emag>"
-	//   "produse vandute si livrate de emag" (also accepted — delivered by eMAG)
-	if strings.Contains(lower, "vandute de emag") {
+	//   "produse vandute de emag" (sub-banner inside an emag-delivered outer group)
+	if strings.Contains(l, "livrate de emag") {
 		return true
 	}
-	if strings.Contains(lower, "livrate de emag") {
+	if strings.Contains(l, "vandute de emag") {
 		return true
 	}
 	return false
 }
 
-func groupLabel(h string) string {
-	l := strings.ToLower(h)
-	if strings.Contains(l, "vândute de emag") || strings.Contains(l, "vandute de emag") {
+func sellerFromBanner(banner string) string {
+	l := strings.ToLower(banner)
+	l = strings.ReplaceAll(l, "ă", "a")
+	l = strings.ReplaceAll(l, "â", "a")
+	l = strings.ReplaceAll(l, "î", "i")
+	l = strings.ReplaceAll(l, "ș", "s")
+	l = strings.ReplaceAll(l, "ț", "t")
+	if strings.Contains(l, "vandute de emag") {
 		return "eMAG"
 	}
-	return strings.TrimSpace(h)
+	// "Produse vândute de X și livrate de eMAG" → X
+	reSeller := regexp.MustCompile(`(?i)vandute de (.+?)\s+si livrate de emag`)
+	if m := reSeller.FindStringSubmatch(l); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return "eMAG"
 }
 
-// extractProductsAfter finds product rows after the given group header element.
-// It looks for subsequent elements that contain an <img>, a product name, a "X buc" pattern,
-// and a "<price> Lei" line — until it hits another group header or the end.
-func extractProductsAfter(node *goquery.Selection, header string) []Product {
-	var out []Product
-	// Walk forward through following siblings and their descendants.
-	// Use a flat walker: from the node, go up until we find an ancestor that has "following" elements.
-	container := node
-	// Look for table rows as siblings
-	var candidates []*goquery.Selection
-	container.NextAll().Each(func(_ int, s *goquery.Selection) {
-		candidates = append(candidates, s)
-		s.Find("*").Each(func(_ int, inner *goquery.Selection) {
-			candidates = append(candidates, inner)
-		})
-	})
-	// Also scan parent's siblings (common pattern: header is a <td>/<div>, product rows are sibling <tr>/<div>s)
-	container.Parent().NextAll().Each(func(_ int, s *goquery.Selection) {
-		candidates = append(candidates, s)
-	})
-
-	seenNames := map[string]bool{}
-	for _, c := range candidates {
-		t := strings.TrimSpace(c.Text())
-		if t == "" {
-			continue
+// isTotalRow returns true if the row is a "Total:" line (not a product row).
+func isTotalRow(text string) bool {
+	// Heuristic: a total row has "Total:" prefix (after whitespace) and doesn't have "N buc".
+	l := strings.ToLower(strings.TrimSpace(text))
+	if !strings.HasPrefix(l, "total") {
+		// Sometimes there is leading whitespace from sibling cells
+		idx := strings.Index(l, "total:")
+		if idx < 0 {
+			return false
 		}
-		if isGroupHeader(t) && normHeader(t) != normHeader(header) {
+	}
+	return !reQty.MatchString(text)
+}
+
+// extractProductRow returns a Product when the row looks like a product row.
+// Product row signals:
+//   - contains an <img> (preferably from s13emagst.akamaized.net)
+//   - has an <a title="..."> for the product name
+//   - has "N buc" and "X Lei" in its text
+func extractProductRow(tr *goquery.Selection) (Product, bool) {
+	text := strings.Join(strings.Fields(tr.Text()), " ")
+	if text == "" {
+		return Product{}, false
+	}
+	qtyMatch := reQty.FindStringSubmatch(text)
+	if qtyMatch == nil {
+		return Product{}, false
+	}
+	priceMatches := rePriceLei.FindAllStringSubmatch(text, -1)
+	if len(priceMatches) == 0 {
+		return Product{}, false
+	}
+
+	// Reject rows that are discount/shipping/total lines
+	lo := strings.ToLower(text)
+	if strings.Contains(lo, "discount") || strings.Contains(lo, "reducere") ||
+		strings.Contains(lo, "cost livrare") || strings.Contains(lo, "servicii") ||
+		strings.HasPrefix(strings.TrimSpace(lo), "total") {
+		return Product{}, false
+	}
+
+	// Image
+	var imgURL string
+	if img := tr.Find("img").First(); img.Length() > 0 {
+		imgURL, _ = img.Attr("src")
+	}
+	// A product row should have a product image from eMAG's product CDN.
+	if imgURL == "" || !strings.Contains(imgURL, "emagst.akamaized.net") {
+		return Product{}, false
+	}
+
+	// Name: prefer <a title="..."> on a link.
+	name := ""
+	tr.Find("a[title]").EachWithBreak(func(_ int, a *goquery.Selection) bool {
+		if t, ok := a.Attr("title"); ok && len(strings.TrimSpace(t)) > 3 {
+			name = strings.TrimSpace(t)
+			return false
+		}
+		return true
+	})
+	if name == "" {
+		if a := tr.Find("a").First(); a.Length() > 0 {
+			name = strings.TrimSpace(a.Text())
+		}
+	}
+	if name == "" {
+		return Product{}, false
+	}
+
+	qty, _ := strconv.Atoi(qtyMatch[1])
+
+	// Line total = last price (typical eMAG layout puts the positive line total at the right).
+	var bani int64
+	for i := len(priceMatches) - 1; i >= 0; i-- {
+		v := priceToBani(priceMatches[i][1])
+		if v > 0 {
+			bani = v
 			break
 		}
-		// Heuristic: row contains qty "X buc" and a price "Y Lei"
-		qtyMatch := reQty.FindStringSubmatch(t)
-		priceMatches := rePriceLei.FindAllStringSubmatch(t, -1)
-		if qtyMatch == nil || len(priceMatches) == 0 {
-			continue
-		}
-		// Skip rows that look like discount/shipping ("Discount conform", "Cost livrare", "Total:")
-		lo := strings.ToLower(t)
-		if strings.Contains(lo, "discount") || strings.Contains(lo, "reducere") ||
-			strings.Contains(lo, "cost livrare") || strings.HasPrefix(strings.TrimSpace(lo), "total") {
-			continue
-		}
-		qty, _ := strconv.Atoi(qtyMatch[1])
-		// Product line total is usually the LAST non-negative price on the row.
-		var bani int64
-		for i := len(priceMatches) - 1; i >= 0; i-- {
-			v := priceToBani(priceMatches[i][1])
-			if v >= 0 {
-				bani = v
-				break
-			}
-		}
-		name := extractProductName(c, t)
-		if name == "" {
-			continue
-		}
-		if seenNames[name] {
-			continue
-		}
-		seenNames[name] = true
-		imgURL := ""
-		if img := c.Find("img").First(); img.Length() > 0 {
-			imgURL, _ = img.Attr("src")
-		}
-		out = append(out, Product{
-			Name:          name,
-			ImageURL:      imgURL,
-			Qty:           qty,
-			LineTotalBani: bani,
-		})
 	}
-	return out
-}
 
-func extractProductName(row *goquery.Selection, rowText string) string {
-	// Prefer an <a> text or an <img alt> if present.
-	if a := row.Find("a").First(); a.Length() > 0 {
-		t := strings.TrimSpace(a.Text())
-		if len(t) > 3 {
-			return t
-		}
-	}
-	if img := row.Find("img").First(); img.Length() > 0 {
-		if alt, ok := img.Attr("alt"); ok && len(alt) > 3 {
-			return alt
-		}
-	}
-	// Fallback: the part of rowText before "\t" or "N buc"
-	t := strings.ReplaceAll(rowText, "\n", " ")
-	t = strings.Join(strings.Fields(t), " ")
-	if idx := reQty.FindStringIndex(t); idx != nil {
-		return strings.TrimSpace(t[:idx[0]])
-	}
-	return ""
+	return Product{
+		Name:          name,
+		ImageURL:      imgURL,
+		Qty:           qty,
+		LineTotalBani: bani,
+	}, true
 }
 
 func priceToBani(s string) int64 {
@@ -357,102 +382,133 @@ func priceToBani(s string) int64 {
 	return int64(f * 100)
 }
 
-func extractLastTotal(text string) int64 {
-	// Find the LAST occurrence of "Total:" followed by a price.
-	reTotal := regexp.MustCompile(`(?i)Total\s*:\s*(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
-	matches := reTotal.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return 0
-	}
-	return priceToBani(matches[len(matches)-1][1])
+// extractStylizedPin finds the 7-box PIN rendered as individual styled <span>
+// elements in the Sameday arrived email (used only as fallback if QR URL parse fails).
+func extractStylizedPin(doc *goquery.Document) string {
+	var best string
+	doc.Find("table").EachWithBreak(func(_ int, tbl *goquery.Selection) bool {
+		chars := []byte{}
+		tbl.Find("span").Each(func(_ int, sp *goquery.Selection) {
+			t := strings.TrimSpace(sp.Text())
+			if len(t) == 1 {
+				r := t[0]
+				if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') {
+					chars = append(chars, r)
+				}
+			}
+		})
+		if len(chars) >= 6 && len(chars) <= 10 {
+			best = string(chars)
+			return false
+		}
+		return true
+	})
+	return strings.ToUpper(best)
 }
 
-func extractPin(plainBody string) string {
-	loc := rePinLabel.FindStringIndex(plainBody)
-	if loc == nil {
-		return ""
+// extractEasyboxFromHTML finds the block next to the pin_easybox icon and
+// returns the first two meaningful lines (name, address).
+func extractEasyboxFromHTML(doc *goquery.Document) (name, addr string) {
+	// The pin icon is <img alt="pin_easybox">. Find the nearest <p> after it
+	// in the enclosing row or parent block.
+	var captured []string
+	doc.Find("img[alt='pin_easybox']").EachWithBreak(func(_ int, img *goquery.Selection) bool {
+		// Walk up to the enclosing row/table and search for a <p>
+		container := img.Parent().Parent() // img -> td -> tr
+		var text string
+		if p := container.Find("p").First(); p.Length() > 0 {
+			text, _ = p.Html()
+		} else if pp := img.Closest("table").Find("p").First(); pp.Length() > 0 {
+			text, _ = pp.Html()
+		}
+		if text != "" {
+			// Replace <br> with newlines then strip tags
+			text = strings.ReplaceAll(text, "<br>", "\n")
+			text = strings.ReplaceAll(text, "<br/>", "\n")
+			text = strings.ReplaceAll(text, "<br />", "\n")
+			text = stripTags(text)
+			for _, l := range strings.Split(text, "\n") {
+				l = strings.TrimSpace(l)
+				if l == "" {
+					continue
+				}
+				lo := strings.ToLower(l)
+				if strings.HasPrefix(lo, "program easybox") {
+					continue
+				}
+				captured = append(captured, l)
+				if len(captured) >= 2 {
+					break
+				}
+			}
+			return false
+		}
+		return true
+	})
+	if len(captured) >= 1 {
+		name = captured[0]
 	}
-	after := plainBody[loc[1]:]
-	lines := strings.Split(after, "\n")
-	var chars []byte
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
-		}
-		// If the line has any non-space content that doesn't look like a single char PIN digit,
-		// but the first char is a letter/digit, use it.
-		r := l[0]
-		if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
-			chars = append(chars, r)
-		}
-		if len(chars) >= 7 {
-			break
-		}
-	}
-	return strings.ToUpper(string(chars))
-}
-
-func extractEasyboxInfo(plainBody string) (name, addr string) {
-	loc := rePastrareLabel.FindStringIndex(plainBody)
-	if loc == nil {
-		return "", ""
-	}
-	after := plainBody[loc[1]:]
-	lines := strings.Split(after, "\n")
-	var collected []string
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
-		}
-		// Skip placeholder tokens / image alts
-		lo := strings.ToLower(l)
-		if lo == "pin_easybox" || lo == "qr_easybox" || strings.HasPrefix(lo, "program easybox") {
-			continue
-		}
-		collected = append(collected, l)
-		if len(collected) >= 2 {
-			break
-		}
-	}
-	if len(collected) >= 1 {
-		name = collected[0]
-	}
-	if len(collected) >= 2 {
-		addr = collected[1]
+	if len(captured) >= 2 {
+		addr = captured[1]
 	}
 	return
 }
 
-func extractQRContentID(htmlBody string) string {
-	// Pick an <img src="cid:..."> with a qr-ish context; if multiple, pick the one whose alt/filename hints QR.
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return ""
-	}
-	var best string
-	var fallback string
-	doc.Find("img").Each(func(_ int, img *goquery.Selection) {
-		src, _ := img.Attr("src")
-		m := reCIDSrc.FindStringSubmatch(src)
-		if m == nil {
-			return
-		}
-		cid := m[1]
-		alt, _ := img.Attr("alt")
-		srcLower := strings.ToLower(src + " " + alt)
-		if strings.Contains(srcLower, "qr") {
-			if best == "" {
-				best = cid
+// stripTags is a tiny best-effort HTML tag stripper for short fragments.
+func stripTags(s string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				b.WriteRune(r)
 			}
 		}
-		if fallback == "" {
-			fallback = cid
-		}
-	})
-	if best != "" {
-		return best
 	}
-	return fallback
+	return b.String()
+}
+
+// htmlToText returns a plain-text rendering of an HTML body suitable for
+// regex-based classification of arrived emails. Preserves newlines crudely.
+func htmlToText(h string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range h {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+			b.WriteRune('\n')
+		default:
+			if !inTag {
+				b.WriteRune(r)
+			}
+		}
+	}
+	s := b.String()
+	// HTML entity decoding for the handful we care about
+	repls := []string{
+		"&nbsp;", " ",
+		"&amp;", "&",
+		"&lt;", "<",
+		"&gt;", ">",
+		"&#x103;", "ă",
+		"&#x219;", "ș",
+		"&#x21B;", "ț",
+		"&#xEE;", "î",
+		"&#xE2;", "â",
+		"&#xCE;", "Î",
+		"&#xC2;", "Â",
+		"&#x15F;", "ș",
+		"&#x163;", "ț",
+	}
+	r := strings.NewReplacer(repls...)
+	s = r.Replace(s)
+	return s
 }

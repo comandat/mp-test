@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Comenzile mele</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Comenzile mele</h1>
+</header>
+
+<main class="container">
+  {{if not .Orders}}
+  <div class="empty">
+    <p>Nicio comandă activă acum.</p>
+    <p class="muted">Emailurile noi se procesează automat la fiecare 2 minute.</p>
+  </div>
+  {{end}}
+
+  {{range .Orders}}
+  <a class="card" href="/order/{{.OrderNumber}}">
+    <div class="card-head">
+      <span class="status-pill {{statusClass .Status}}">{{statusLabel .Status}}</span>
+      <span class="order-num">#{{.OrderNumber}}</span>
+    </div>
+    {{if .EasyboxName}}
+    <div class="card-row">{{.EasyboxName}}</div>
+    {{end}}
+    <div class="card-row">
+      <span class="total">{{lei .TotalBani}}</span>
+      {{if .PickupDeadline}}
+      <span class="deadline">{{relativeDeadline .PickupDeadline}}</span>
+      {{end}}
+    </div>
+    {{if .Products}}
+    <div class="card-row muted small">
+      {{len .Products}} {{if eq (len .Products) 1}}produs{{else}}produse{{end}}
+    </div>
+    {{end}}
+  </a>
+  {{end}}
+</main>
+
+<nav class="bottom-bar">
+  <a class="btn-primary" href="/map">Vezi harta</a>
+</nav>
+</body>
+</html>

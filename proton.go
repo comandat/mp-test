@@ -14,7 +14,6 @@ import (
 
 	"github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
-	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -32,7 +31,7 @@ func NewProtonSync(cfg *Config, store *Store) *ProtonSync {
 	return &ProtonSync{cfg: cfg, store: store}
 }
 
-// Start performs login / session restore, then enters a polling loop.
+// Start performs login / session restore, then polls the inbox periodically.
 // Blocks until ctx is cancelled.
 func (p *ProtonSync) Start(ctx context.Context) error {
 	if err := p.connect(ctx); err != nil {
@@ -40,7 +39,6 @@ func (p *ProtonSync) Start(ctx context.Context) error {
 	}
 	log.Printf("proton: connected")
 
-	// Initial backfill then periodic poll.
 	if err := p.scanInbox(ctx); err != nil {
 		log.Printf("proton: initial scan error: %v", err)
 	}
@@ -55,7 +53,6 @@ func (p *ProtonSync) Start(ctx context.Context) error {
 		case <-ticker.C:
 			if err := p.scanInbox(ctx); err != nil {
 				log.Printf("proton: scan error: %v", err)
-				// On auth errors, try reconnecting once.
 				if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauth") {
 					if err := p.connect(ctx); err != nil {
 						log.Printf("proton: reconnect failed: %v", err)
@@ -117,7 +114,7 @@ func (p *ProtonSync) connect(ctx context.Context) error {
 		c = newC
 	}
 
-	// Persist rotated tokens.
+	// Persist rotated tokens on every refresh.
 	c.AddAuthHandler(func(a proton.Auth) {
 		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -151,8 +148,8 @@ func (p *ProtonSync) connect(ctx context.Context) error {
 	return nil
 }
 
-// scanInbox fetches recent Inbox messages, classifies and processes unknown ones.
-// We use multiple subject queries to catch Romanian eMAG emails.
+// scanInbox lists recent Inbox messages matching a handful of subject hints,
+// classifies each new one, and updates the store.
 func (p *ProtonSync) scanInbox(ctx context.Context) error {
 	p.mu.Lock()
 	c := p.client
@@ -211,9 +208,6 @@ func (p *ProtonSync) processMessage(ctx context.Context, meta proton.MessageMeta
 	}
 
 	htmlBody, plainBody := extractMIMEBodies(mimeBytes)
-	if htmlBody == "" && plainBody == "" {
-		return fmt.Errorf("empty body")
-	}
 	textForClassify := plainBody
 	if textForClassify == "" {
 		textForClassify = htmlToText(htmlBody)
@@ -221,7 +215,6 @@ func (p *ProtonSync) processMessage(ctx context.Context, meta proton.MessageMeta
 
 	kind := ClassifyEmail(meta.Subject, textForClassify)
 	if kind == "" {
-		// Not interesting — record as processed so we don't re-scan.
 		_ = p.store.MarkProcessed(ctx, meta.ID, "", "")
 		return nil
 	}
@@ -242,30 +235,6 @@ func (p *ProtonSync) processMessage(ctx context.Context, meta proton.MessageMeta
 		return nil
 	}
 
-	// For arrived: fetch and persist the QR image.
-	if kind == "arrived" && parsed.QRContentID != "" {
-		for _, att := range full.Attachments {
-			if matchesCID(att, parsed.QRContentID) {
-				data, err := fetchAndDecryptAttachment(ctx, c, kr, att)
-				if err != nil {
-					log.Printf("proton: qr attachment decrypt: %v", err)
-					break
-				}
-				attID := uuid.NewString()
-				ct := string(att.MIMEType)
-				if ct == "" {
-					ct = "image/png"
-				}
-				if err := p.store.SaveAttachment(ctx, attID, parsed.OrderNumber, ct, data); err != nil {
-					log.Printf("proton: save attachment: %v", err)
-					break
-				}
-				parsed.QRAttachmentID = attID
-				break
-			}
-		}
-	}
-
 	if err := p.store.UpsertFromEmail(ctx, kind, parsed); err != nil {
 		return fmt.Errorf("upsert: %w", err)
 	}
@@ -273,47 +242,16 @@ func (p *ProtonSync) processMessage(ctx context.Context, meta proton.MessageMeta
 	return p.store.MarkProcessed(ctx, meta.ID, kind, parsed.OrderNumber)
 }
 
-func matchesCID(att proton.Attachment, cid string) bool {
-	for _, h := range att.Headers["Content-Id"] {
-		if strings.Trim(h, "<> ") == strings.Trim(cid, "<> ") {
-			return true
-		}
-	}
-	for _, h := range att.Headers["Content-ID"] {
-		if strings.Trim(h, "<> ") == strings.Trim(cid, "<> ") {
-			return true
-		}
-	}
-	return false
-}
-
-func fetchAndDecryptAttachment(ctx context.Context, c *proton.Client, kr *crypto.KeyRing, att proton.Attachment) ([]byte, error) {
-	raw, err := c.GetAttachment(ctx, att.ID)
-	if err != nil {
-		return nil, err
-	}
-	kps, err := base64.StdEncoding.DecodeString(att.KeyPackets)
-	if err != nil {
-		return nil, err
-	}
-	msg := crypto.NewPGPSplitMessage(kps, raw).GetPGPMessage()
-	plain, err := kr.Decrypt(msg, nil, crypto.GetUnixTime())
-	if err != nil {
-		return nil, err
-	}
-	return plain.GetBinary(), nil
-}
-
-// extractMIMEBodies walks the raw MIME message bytes and returns the best HTML and plain-text parts.
+// extractMIMEBodies walks MIME bytes and returns the HTML + plain-text parts.
 func extractMIMEBodies(mimeBytes []byte) (htmlBody, plainBody string) {
 	msg, err := mail.ReadMessage(strings.NewReader(string(mimeBytes)))
 	if err != nil {
 		return "", string(mimeBytes)
 	}
-	return walkMIMEPart(msg.Header.Get("Content-Type"), msg.Body)
+	return walkMIMEPart(msg.Header.Get("Content-Type"), msg.Body, msg.Header.Get("Content-Transfer-Encoding"))
 }
 
-func walkMIMEPart(contentType string, body io.Reader) (htmlOut, plainOut string) {
+func walkMIMEPart(contentType string, body io.Reader, topEncoding string) (htmlOut, plainOut string) {
 	mt, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		data, _ := io.ReadAll(body)
@@ -328,6 +266,7 @@ func walkMIMEPart(contentType string, body io.Reader) (htmlOut, plainOut string)
 		return walkMultipart(data, boundary)
 	}
 	data, _ := io.ReadAll(body)
+	data = decodeTransfer(data, strings.ToLower(topEncoding))
 	decoded := string(data)
 	if mt == "text/html" {
 		return decoded, ""
@@ -339,15 +278,13 @@ func walkMultipart(data []byte, boundary string) (htmlOut, plainOut string) {
 	delim := []byte("--" + boundary)
 	parts := splitAt(data, delim)
 	for _, p := range parts {
-		// Each part starts with headers, then blank line, then body.
 		p = trimCRLF(p)
 		idx := indexOfDoubleNewline(p)
 		if idx < 0 {
 			continue
 		}
 		headerBlock := string(p[:idx])
-		body := p[idx:]
-		body = trimLeadingNewlines(body)
+		body := trimLeadingNewlines(p[idx:])
 
 		h := parseHeaders(headerBlock)
 		ct := h["content-type"]
@@ -373,9 +310,9 @@ func walkMultipart(data []byte, boundary string) (htmlOut, plainOut string) {
 			continue
 		}
 		if mt == "text/html" && htmlOut == "" {
-			htmlOut = decodeCharset(body, params["charset"])
+			htmlOut = string(body)
 		} else if mt == "text/plain" && plainOut == "" {
-			plainOut = decodeCharset(body, params["charset"])
+			plainOut = string(body)
 		}
 	}
 	return
@@ -402,17 +339,47 @@ func decodeTransfer(body []byte, encoding string) []byte {
 }
 
 func decodeQuotedPrintable(body []byte) []byte {
-	r := strings.NewReader(string(body))
-	out, err := io.ReadAll(quotedPrintableReader(r))
-	if err != nil {
-		return body
+	// Minimal inline QP decoder (handles =XX and soft line breaks "=\r\n").
+	var out []byte
+	i := 0
+	for i < len(body) {
+		b := body[i]
+		if b == '=' && i+1 < len(body) {
+			nx := body[i+1]
+			if nx == '\n' {
+				i += 2
+				continue
+			}
+			if nx == '\r' && i+2 < len(body) && body[i+2] == '\n' {
+				i += 3
+				continue
+			}
+			if i+2 < len(body) {
+				hi := hexVal(body[i+1])
+				lo := hexVal(body[i+2])
+				if hi >= 0 && lo >= 0 {
+					out = append(out, byte(hi<<4|lo))
+					i += 3
+					continue
+				}
+			}
+		}
+		out = append(out, b)
+		i++
 	}
 	return out
 }
 
-func decodeCharset(body []byte, charset string) string {
-	// Best effort — most eMAG emails are UTF-8.
-	return string(body)
+func hexVal(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return -1
 }
 
 func splitAt(data, delim []byte) [][]byte {
@@ -503,38 +470,4 @@ func parseHeaders(block string) map[string]string {
 	}
 	flush()
 	return out
-}
-
-// htmlToText is a best-effort text extractor from HTML for classification purposes.
-func htmlToText(h string) string {
-	// Strip tags very crudely.
-	var b strings.Builder
-	skip := false
-	for _, r := range h {
-		switch r {
-		case '<':
-			skip = true
-		case '>':
-			skip = false
-			b.WriteRune(' ')
-		default:
-			if !skip {
-				b.WriteRune(r)
-			}
-		}
-	}
-	// Collapse whitespace but preserve line breaks approximately.
-	s := b.String()
-	s = strings.ReplaceAll(s, "\r", "")
-	// Convert runs of spaces to single spaces but keep newlines.
-	out := make([]rune, 0, len(s))
-	var prev rune
-	for _, r := range s {
-		if r == ' ' && prev == ' ' {
-			continue
-		}
-		out = append(out, r)
-		prev = r
-	}
-	return string(out)
 }
