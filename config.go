@@ -10,6 +10,8 @@ type Config struct {
 	ProtonPassword        string
 	ProtonMailboxPassword string
 	ProtonTOTPSecret      string
+	ProtonAppVersion      string
+	ProtonDebug           bool
 	DBPath                string
 	Port                  string
 	NominatimUserAgent    string
@@ -22,6 +24,8 @@ func LoadConfig() (*Config, error) {
 		ProtonPassword:        os.Getenv("PROTON_PASSWORD"),
 		ProtonMailboxPassword: os.Getenv("PROTON_MAILBOX_PASSWORD"),
 		ProtonTOTPSecret:      os.Getenv("PROTON_TOTP_SECRET"),
+		ProtonAppVersion:      os.Getenv("PROTON_APP_VERSION"),
+		ProtonDebug:           os.Getenv("PROTON_DEBUG") == "1",
 		DBPath:                os.Getenv("DB_PATH"),
 		Port:                  os.Getenv("PORT"),
 		NominatimUserAgent:    os.Getenv("NOMINATIM_USER_AGENT"),

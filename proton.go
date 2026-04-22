@@ -72,7 +72,18 @@ func (p *ProtonSync) connect(ctx context.Context) error {
 		p.client = nil
 	}
 
-	p.mgr = proton.New()
+	// Proton's edge rejects requests with the library's default app-version
+	// header. Present a Bridge-style identifier by default; allow override via
+	// PROTON_APP_VERSION in case Proton tightens its whitelist later.
+	appVersion := p.cfg.ProtonAppVersion
+	if appVersion == "" {
+		appVersion = "Other"
+	}
+	opts := []proton.Option{proton.WithAppVersion(appVersion)}
+	if p.cfg.ProtonDebug {
+		opts = append(opts, proton.WithDebug(true))
+	}
+	p.mgr = proton.New(opts...)
 
 	sess, err := p.store.LoadSession(ctx)
 	if err != nil {
