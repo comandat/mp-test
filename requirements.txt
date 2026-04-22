@@ -1,8 +1,0 @@
-camoufox[geoip]
-python-dotenv
-httpx
-flask==3.0.2
-Flask-SocketIO==5.3.6
-python-socketio[client]==5.11.1
-eventlet==0.35.2
-websocket-client==1.7.0
