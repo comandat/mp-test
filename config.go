@@ -6,35 +6,29 @@ import (
 )
 
 type Config struct {
-	ProtonUsername        string
-	ProtonPassword        string
-	ProtonMailboxPassword string
-	ProtonTOTPSecret      string
-	ProtonAppVersion      string
-	ProtonDebug           bool
-	DBPath                string
-	Port                  string
-	NominatimUserAgent    string
-	SyncIntervalSeconds   int
+	AgentMailAPIKey     string
+	AgentMailInboxID    string
+	AgentMailBaseURL    string
+	DBPath              string
+	Port                string
+	NominatimUserAgent  string
+	SyncIntervalSeconds int
 }
 
 func LoadConfig() (*Config, error) {
 	c := &Config{
-		ProtonUsername:        os.Getenv("PROTON_USERNAME"),
-		ProtonPassword:        os.Getenv("PROTON_PASSWORD"),
-		ProtonMailboxPassword: os.Getenv("PROTON_MAILBOX_PASSWORD"),
-		ProtonTOTPSecret:      os.Getenv("PROTON_TOTP_SECRET"),
-		ProtonAppVersion:      os.Getenv("PROTON_APP_VERSION"),
-		ProtonDebug:           os.Getenv("PROTON_DEBUG") == "1",
-		DBPath:                os.Getenv("DB_PATH"),
-		Port:                  os.Getenv("PORT"),
-		NominatimUserAgent:    os.Getenv("NOMINATIM_USER_AGENT"),
+		AgentMailAPIKey:    os.Getenv("AGENTMAIL_API_KEY"),
+		AgentMailInboxID:   os.Getenv("AGENTMAIL_INBOX_ID"),
+		AgentMailBaseURL:   os.Getenv("AGENTMAIL_BASE_URL"),
+		DBPath:             os.Getenv("DB_PATH"),
+		Port:               os.Getenv("PORT"),
+		NominatimUserAgent: os.Getenv("NOMINATIM_USER_AGENT"),
 	}
-	if c.ProtonUsername == "" || c.ProtonPassword == "" {
-		return nil, fmt.Errorf("PROTON_USERNAME and PROTON_PASSWORD are required")
+	if c.AgentMailAPIKey == "" || c.AgentMailInboxID == "" {
+		return nil, fmt.Errorf("AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID are required")
 	}
-	if c.ProtonMailboxPassword == "" {
-		c.ProtonMailboxPassword = c.ProtonPassword
+	if c.AgentMailBaseURL == "" {
+		c.AgentMailBaseURL = "https://api.agentmail.to"
 	}
 	if c.DBPath == "" {
 		c.DBPath = "/data/app.db"

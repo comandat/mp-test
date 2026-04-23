@@ -28,11 +28,11 @@ func main() {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// Background: Proton sync loop
-	sync := NewProtonSync(cfg, store)
+	// Background: AgentMail sync loop
+	sync := NewAgentMailSync(cfg, store)
 	go func() {
 		if err := sync.Start(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("proton sync stopped: %v", err)
+			log.Printf("agentmail sync stopped: %v", err)
 		}
 	}()
 

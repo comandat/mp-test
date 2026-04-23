@@ -111,14 +111,6 @@ func (s *Store) migrate() error {
 			lon REAL,
 			fetched_at TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS proton_session(
-			id INTEGER PRIMARY KEY CHECK(id=1),
-			uid TEXT,
-			access_token TEXT,
-			refresh_token TEXT,
-			last_event_id TEXT,
-			updated_at TEXT NOT NULL
-		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -129,44 +121,6 @@ func (s *Store) migrate() error {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
-
-// ---------- Proton session ----------
-
-type Session struct {
-	UID          string
-	AccessToken  string
-	RefreshToken string
-	LastEventID  string
-}
-
-func (s *Store) LoadSession(ctx context.Context) (*Session, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT uid, access_token, refresh_token, COALESCE(last_event_id,'') FROM proton_session WHERE id=1`)
-	var sess Session
-	if err := row.Scan(&sess.UID, &sess.AccessToken, &sess.RefreshToken, &sess.LastEventID); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &sess, nil
-}
-
-func (s *Store) SaveSessionAuth(ctx context.Context, uid, accessToken, refreshToken string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO proton_session(id, uid, access_token, refresh_token, updated_at)
-		VALUES(1, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			uid=excluded.uid, access_token=excluded.access_token,
-			refresh_token=excluded.refresh_token, updated_at=excluded.updated_at`,
-		uid, accessToken, refreshToken, time.Now().UTC().Format(time.RFC3339))
-	return err
-}
-
-func (s *Store) SaveLastEventID(ctx context.Context, eventID string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE proton_session SET last_event_id=?, updated_at=? WHERE id=1`,
-		eventID, time.Now().UTC().Format(time.RFC3339))
-	return err
-}
 
 // ---------- Emails processed ----------
 

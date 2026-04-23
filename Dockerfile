@@ -3,10 +3,7 @@
 FROM golang:1.24-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache ca-certificates tzdata
-# go.mod uses a `replace` pointing at ./third_party/go-proton-api, so the
-# vendored source has to be present before `go mod download`.
 COPY go.mod go.sum* ./
-COPY third_party ./third_party
 RUN go mod download
 COPY . .
 ENV CGO_ENABLED=0 GOOS=linux
