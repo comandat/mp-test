@@ -41,7 +41,7 @@ func main() {
 	go geo.Run(ctx)
 
 	// HTTP server
-	web, err := NewWeb(store)
+	web, err := NewWeb(store, sync)
 	if err != nil {
 		log.Fatalf("web: %v", err)
 	}

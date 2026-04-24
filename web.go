@@ -17,10 +17,11 @@ var assetsFS embed.FS
 
 type Web struct {
 	store *Store
+	sync  *AgentMailSync
 	tpl   *template.Template
 }
 
-func NewWeb(store *Store) (*Web, error) {
+func NewWeb(store *Store, sync *AgentMailSync) (*Web, error) {
 	funcs := template.FuncMap{
 		"lei": func(bani int64) string {
 			return formatLei(bani)
@@ -128,7 +129,7 @@ func NewWeb(store *Store) (*Web, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Web{store: store, tpl: tpl}, nil
+	return &Web{store: store, sync: sync, tpl: tpl}, nil
 }
 
 func (w *Web) Routes() http.Handler {
@@ -137,9 +138,84 @@ func (w *Web) Routes() http.Handler {
 	mux.HandleFunc("/map", w.handleMap)
 	mux.HandleFunc("/api/pins", w.handlePins)
 	mux.HandleFunc("/order/", w.handleOrder)
+	mux.HandleFunc("/debug/emails", w.handleDebugList)
+	mux.HandleFunc("/debug/email", w.handleDebugFetch)
 	mux.Handle("/static/", http.FileServer(http.FS(assetsFS)))
 	mux.HandleFunc("/", w.handleList)
 	return logMiddleware(securityHeaders(mux))
+}
+
+// /debug/emails?kind=confirmation&order=NNN
+//
+// Lists every message we've stored in emails_processed (most recent first).
+// Each row links to /debug/email?id=... which streams the raw HTML straight
+// from AgentMail so we can compare it against the parser's expectations.
+func (w *Web) handleDebugList(rw http.ResponseWriter, r *http.Request) {
+	kind := r.URL.Query().Get("kind")
+	order := r.URL.Query().Get("order")
+	rows, err := w.store.ListProcessedEmails(r.Context(), kind, order, 500)
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(rw, `<!DOCTYPE html><html><body style="font-family:monospace;padding:16px;">
+<h2>emails_processed (%d rows)</h2>
+<form method="GET" style="margin:8px 0;">
+  <label>kind: <input name="kind" value="%s" placeholder="confirmation|shipped|arrived"></label>
+  <label>order: <input name="order" value="%s"></label>
+  <button>filter</button>
+</form>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>processed_at</th><th>kind</th><th>order</th><th>message_id</th><th>html</th><th>text</th></tr>`,
+		len(rows), template.HTMLEscapeString(kind), template.HTMLEscapeString(order))
+	for _, pe := range rows {
+		idEsc := template.HTMLEscapeString(pe.MessageID)
+		fmt.Fprintf(rw, `<tr>
+<td>%s</td><td>%s</td><td>%s</td><td>%s</td>
+<td><a href="/debug/email?id=%s&format=html">html</a></td>
+<td><a href="/debug/email?id=%s&format=text">text</a></td>
+</tr>`,
+			pe.ProcessedAt.Format("2006-01-02 15:04:05"),
+			template.HTMLEscapeString(pe.Kind),
+			template.HTMLEscapeString(pe.OrderNumber),
+			idEsc, idEsc, idEsc)
+	}
+	fmt.Fprintf(rw, `</table></body></html>`)
+}
+
+// /debug/email?id=<message_id>&format=html|text|raw
+//
+// Streams the AgentMail message body so we can see exactly what the parser
+// is fed. format=html returns the raw HTML as text/plain (so the browser
+// shows source instead of rendering it); format=text returns text/plain
+// of the message text body.
+func (w *Web) handleDebugFetch(rw http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(rw, "missing id", 400)
+		return
+	}
+	if w.sync == nil {
+		http.Error(rw, "agentmail sync not configured", 500)
+		return
+	}
+	subject, htmlBody, textBody, err := w.sync.FetchRaw(r.Context(), id)
+	if err != nil {
+		http.Error(rw, "fetch: "+err.Error(), 502)
+		return
+	}
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "html"
+	}
+	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintf(rw, "subject: %s\nmessage_id: %s\nformat: %s\n\n----- BODY -----\n", subject, id, format)
+	if format == "text" {
+		rw.Write([]byte(textBody))
+		return
+	}
+	rw.Write([]byte(htmlBody))
 }
 
 func (w *Web) handleHealth(rw http.ResponseWriter, r *http.Request) {

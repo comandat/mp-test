@@ -202,33 +202,29 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	// Self-heal: detect post-upgrade stuck states and force re-processing
-	// of every message in the inbox.
-	//
-	//  (a) shipments empty + emails_processed has rows: confirmation/shipped
-	//      emails got consumed before the shipments table even existed.
-	//  (b) shipments has rows but products is empty: the parser found
-	//      delivery groups but rejected every product row (e.g. an old
-	//      image-host filter that no longer matches the live CDN). Wiping
-	//      shipments + emails_processed lets the relaxed parser rebuild from
-	//      scratch.
-	var shipCount, productCount, procCount int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM shipments`).Scan(&shipCount)
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM products`).Scan(&productCount)
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM emails_processed`).Scan(&procCount)
-
-	stuckEmpty := shipCount == 0 && procCount > 0
-	stuckNoProducts := shipCount > 0 && productCount == 0
-	if stuckEmpty || stuckNoProducts {
-		log.Printf("migrate: self-heal (shipments=%d products=%d processed=%d) — resetting for re-scan",
-			shipCount, productCount, procCount)
-		if stuckNoProducts {
-			if _, err := s.db.Exec(`DELETE FROM shipments`); err != nil {
-				return fmt.Errorf("migrate: reset shipments: %w", err)
+	// Self-heal: only the (a) case — emails were marked processed before
+	// the shipments table existed. Wipe emails_processed so the next scan
+	// replays everything. Guarded by a one-shot flag in _meta so we can't
+	// loop on it. The (b) "shipments without products" case is handled
+	// instead by inspecting raw emails via /debug/emails.
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS _meta(key TEXT PRIMARY KEY, value TEXT)`); err != nil {
+		return fmt.Errorf("migrate: _meta: %w", err)
+	}
+	var done string
+	_ = s.db.QueryRow(`SELECT value FROM _meta WHERE key='self_heal_v1'`).Scan(&done)
+	if done == "" {
+		var shipCount, procCount int
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM shipments`).Scan(&shipCount)
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM emails_processed`).Scan(&procCount)
+		if shipCount == 0 && procCount > 0 {
+			log.Printf("migrate: self-heal — shipments empty, clearing %d emails_processed entries", procCount)
+			if _, err := s.db.Exec(`DELETE FROM emails_processed`); err != nil {
+				return fmt.Errorf("migrate: reset emails_processed: %w", err)
 			}
 		}
-		if _, err := s.db.Exec(`DELETE FROM emails_processed`); err != nil {
-			return fmt.Errorf("migrate: reset emails_processed: %w", err)
+		if _, err := s.db.Exec(`INSERT INTO _meta(key, value) VALUES('self_heal_v1', ?)`,
+			time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("migrate: mark self_heal_v1: %w", err)
 		}
 	}
 	return nil
@@ -320,6 +316,54 @@ func (s *Store) IsProcessed(ctx context.Context, messageID string) (bool, error)
 		return false, err
 	}
 	return true, nil
+}
+
+// ProcessedEmail is a row from emails_processed, used by debug endpoints to
+// list what's already been consumed and look up message_ids.
+type ProcessedEmail struct {
+	MessageID   string
+	Kind        string
+	OrderNumber string
+	ProcessedAt time.Time
+}
+
+// ListProcessedEmails returns the most-recent N rows from emails_processed,
+// filtered by kind and/or order_number when provided.
+func (s *Store) ListProcessedEmails(ctx context.Context, kind, orderNum string, limit int) ([]ProcessedEmail, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	q := `SELECT message_id, COALESCE(kind,''), COALESCE(order_number,''), processed_at
+	      FROM emails_processed
+	      WHERE 1=1`
+	args := []any{}
+	if kind != "" {
+		q += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	if orderNum != "" {
+		q += ` AND order_number = ?`
+		args = append(args, orderNum)
+	}
+	q += ` ORDER BY processed_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProcessedEmail
+	for rows.Next() {
+		var pe ProcessedEmail
+		var ts string
+		if err := rows.Scan(&pe.MessageID, &pe.Kind, &pe.OrderNumber, &ts); err != nil {
+			return nil, err
+		}
+		pe.ProcessedAt, _ = time.Parse(time.RFC3339, ts)
+		out = append(out, pe)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) MarkProcessed(ctx context.Context, messageID, kind, orderNum string) error {

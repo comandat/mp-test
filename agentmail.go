@@ -16,9 +16,10 @@ import (
 // each new message, and updates the store. It replaces the old Proton
 // integration — all mail now lands in an AgentMail inbox the user owns.
 type AgentMailSync struct {
-	cfg   *Config
-	store *Store
-	http  *http.Client
+	cfg              *Config
+	store            *Store
+	http             *http.Client
+	dumpedConfHTML   bool // log the raw HTML of the first confirmation we see this run
 }
 
 func NewAgentMailSync(cfg *Config, store *Store) *AgentMailSync {
@@ -150,6 +151,17 @@ func (a *AgentMailSync) getMessage(ctx context.Context, messageID string) (*amMe
 	return &out, nil
 }
 
+// FetchRaw returns the full message (subject, html, text, headers) for a
+// message_id we previously processed. Used by /debug/* endpoints so we can
+// inspect the exact bytes the parser worked on.
+func (a *AgentMailSync) FetchRaw(ctx context.Context, messageID string) (subject, htmlBody, textBody string, err error) {
+	m, err := a.getMessage(ctx, messageID)
+	if err != nil {
+		return "", "", "", err
+	}
+	return m.Subject, m.HTML, m.Text, nil
+}
+
 // processMessage fetches the full body, classifies, parses, and upserts.
 // Unrecognized messages are still recorded in emails_processed so we do
 // not re-fetch them on every poll.
@@ -167,6 +179,17 @@ func (a *AgentMailSync) processMessage(ctx context.Context, meta amMessage) erro
 	kind := ClassifyEmail(full.Subject, plainBody)
 	if kind == "" {
 		return a.store.MarkProcessed(ctx, meta.MessageID, "", "")
+	}
+
+	// One-shot debug dump: print the raw HTML of the FIRST confirmation
+	// email we see this run, so we can compare what the parser is fed
+	// against the live email shape.
+	if kind == "confirmation" && !a.dumpedConfHTML {
+		a.dumpedConfHTML = true
+		log.Printf("agentmail: ====== RAW CONFIRMATION HTML BEGIN ======")
+		log.Printf("agentmail: subject=%q message_id=%s", full.Subject, meta.MessageID)
+		log.Printf("agentmail: html=\n%s", htmlBody)
+		log.Printf("agentmail: ====== RAW CONFIRMATION HTML END ======")
 	}
 
 	var parsed *ParsedEmail
