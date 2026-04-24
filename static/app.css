@@ -268,3 +268,12 @@ body {
   user-select: none;
 }
 .dismissed-wrap[open] > summary { margin-bottom: 10px; }
+
+.courier {
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.courier-name {
+  font-weight: 600;
+  font-size: 14px;
+}

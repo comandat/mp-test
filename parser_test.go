@@ -128,7 +128,7 @@ func TestClassify(t *testing.T) {
 		{"Confirmare înregistrare comandă #485742108 ✍", "", "confirmation"},
 		{"Comanda ta #485633662 a fost predată curierului", "", "shipped"},
 		{"Notificare", "Hei, Comanda ta eMAG numărul 485741339 a ajuns în easybox Casa Nasului.", "arrived"},
-		{"Notificare", "Hei, Comanda ta eMAG Marketplace - SOMESELLER,eMAG numărul 123 a ajuns în easybox.", ""},
+		{"Notificare", "Hei, Comanda ta eMAG Marketplace - SOMESELLER,eMAG numărul 123 a ajuns în easybox Apusului.", "arrived"},
 		{"Random", "Random body", ""},
 	}
 	for _, c := range cases {
@@ -259,6 +259,9 @@ func TestParseArrived(t *testing.T) {
 	if pe.QRURL == "" || !strings.Contains(pe.QRURL, "RP6JED9") {
 		t.Errorf("qr url: %q", pe.QRURL)
 	}
+	if pe.ArrivalCourier != "eMAG" {
+		t.Errorf("courier: got %q, want eMAG", pe.ArrivalCourier)
+	}
 	if !strings.Contains(pe.ArrivalEasybox, "Casa Nasului") {
 		t.Errorf("easybox name: %q", pe.ArrivalEasybox)
 	}
@@ -273,10 +276,36 @@ func TestParseArrived(t *testing.T) {
 	}
 }
 
-func TestParseArrivedMarketplaceRejected(t *testing.T) {
-	body := "Hei, Comanda ta eMAG Marketplace - SELLER XYZ,eMAG numărul 485271936 a ajuns în easybox Apusului."
-	if got := ClassifyEmail("whatever", body); got != "" {
-		t.Errorf("marketplace should be rejected, got %q", got)
+// marketplaceArrivedHTML mirrors a Sameday arrival email where the courier
+// is a marketplace partner rather than eMAG itself. Previously these got
+// rejected; now they are kept and labelled.
+const marketplaceArrivedHTML = `<html><body>
+<p>Hei,<br><br>
+Comanda ta <strong>eMAG Marketplace - PAXYcourier s.r.o.</strong> numărul <strong>485271354</strong> a ajuns în easybox Lujerului.<br>
+Folosește QR-ul sau PIN-ul de mai jos pentru a prelua coletul pana Luni, 27 Apr. ora 15:20.<br><br></p>
+<img src="https://sameday.ro/locker/qr-image/L9F6Y37" alt="" width="200">
+</body></html>`
+
+func TestParseArrivedMarketplaceCourier(t *testing.T) {
+	text := htmlToText(marketplaceArrivedHTML)
+	if got := ClassifyEmail("Notificare", text); got != "arrived" {
+		t.Fatalf("classify: got %q, want arrived", got)
+	}
+	pe, err := ParseArrived(marketplaceArrivedHTML, text)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if pe.OrderNumber != "485271354" {
+		t.Errorf("order: %q", pe.OrderNumber)
+	}
+	if pe.ArrivalCourier != "eMAG Marketplace - PAXYcourier s.r.o." {
+		t.Errorf("courier: got %q", pe.ArrivalCourier)
+	}
+	if !strings.Contains(pe.ArrivalEasybox, "Lujerului") {
+		t.Errorf("easybox: %q", pe.ArrivalEasybox)
+	}
+	if pe.PinCode != "L9F6Y37" {
+		t.Errorf("pin: %q", pe.PinCode)
 	}
 }
 
@@ -298,6 +327,9 @@ func TestParseReminder(t *testing.T) {
 	}
 	if pe.PinCode != "LUKJHZA" {
 		t.Errorf("pin: got %q", pe.PinCode)
+	}
+	if pe.ArrivalCourier != "eMAG Marketplace - CIPRICOM SRL" {
+		t.Errorf("courier: got %q", pe.ArrivalCourier)
 	}
 	if !strings.Contains(pe.ArrivalEasybox, "GEMA Amada Balroom") {
 		t.Errorf("easybox name: %q", pe.ArrivalEasybox)

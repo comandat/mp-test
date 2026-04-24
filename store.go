@@ -67,6 +67,7 @@ type Shipment struct {
 	PickupDeadline  *time.Time
 	PinCode         string
 	QRURL           string
+	CourierLabel    string // who actually shipped it, from the arrival email
 	TotalBani       int64
 	PickedUpAt      *time.Time
 	DismissedAt     *time.Time
@@ -137,6 +138,7 @@ func (s *Store) migrate() error {
 			pickup_deadline TEXT,
 			pin_code TEXT,
 			qr_url TEXT,
+			courier_label TEXT,
 			total_bani INTEGER NOT NULL DEFAULT 0,
 			picked_up_at TEXT,
 			dismissed_at TEXT,
@@ -183,6 +185,12 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`ALTER TABLE products ADD COLUMN shipment_id INTEGER`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate: add shipment_id: %w", err)
+		}
+	}
+	// courier_label was added after the initial shipments schema shipped.
+	if _, err := s.db.Exec(`ALTER TABLE shipments ADD COLUMN courier_label TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate: add courier_label: %w", err)
 		}
 	}
 
@@ -319,7 +327,7 @@ func (s *Store) listShipments(ctx context.Context, orderNum string) ([]Shipment,
 		       COALESCE(seller_group,''), COALESCE(delivery_by,''), delivered_by_emag,
 		       COALESCE(easybox_name,''), COALESCE(easybox_address,''),
 		       lat, lon, pickup_deadline,
-		       COALESCE(pin_code,''), COALESCE(qr_url,''),
+		       COALESCE(pin_code,''), COALESCE(qr_url,''), COALESCE(courier_label,''),
 		       total_bani, picked_up_at, dismissed_at
 		FROM shipments WHERE order_number=? ORDER BY group_index`, orderNum)
 	if err != nil {
@@ -337,7 +345,7 @@ func (s *Store) listShipments(ctx context.Context, orderNum string) ([]Shipment,
 			&sh.SellerGroup, &sh.DeliveryBy, &deliveredByEmag,
 			&sh.EasyboxName, &sh.EasyboxAddress,
 			&lat, &lon, &deadline,
-			&sh.PinCode, &sh.QRURL,
+			&sh.PinCode, &sh.QRURL, &sh.CourierLabel,
 			&sh.TotalBani, &pickedUp, &dismissed); err != nil {
 			return nil, err
 		}
@@ -759,6 +767,7 @@ func attachArrivalTx(ctx context.Context, tx *sql.Tx, p *ParsedEmail, now string
 		    pickup_deadline = COALESCE(?, pickup_deadline),
 		    pin_code        = CASE WHEN ? <> '' THEN ? ELSE pin_code END,
 		    qr_url          = CASE WHEN ? <> '' THEN ? ELSE qr_url END,
+		    courier_label   = CASE WHEN ? <> '' THEN ? ELSE courier_label END,
 		    updated_at      = ?
 		WHERE id = ?`,
 		p.ArrivalEasybox, p.ArrivalEasybox,
@@ -766,6 +775,7 @@ func attachArrivalTx(ctx context.Context, tx *sql.Tx, p *ParsedEmail, now string
 		deadline,
 		p.PinCode, p.PinCode,
 		p.QRURL, p.QRURL,
+		p.ArrivalCourier, p.ArrivalCourier,
 		now, target)
 	return err
 }

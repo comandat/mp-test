@@ -25,6 +25,7 @@ type ParsedEmail struct {
 	// Arrival-only fields.
 	ArrivalEasybox     string
 	ArrivalEasyboxAddr string
+	ArrivalCourier     string // who shipped it (e.g. "eMAG" or "eMAG Marketplace - PAXYcourier s.r.o.")
 	PickupDeadline     *time.Time
 	PinCode            string
 	QRURL              string
@@ -45,9 +46,12 @@ type ParsedShipment struct {
 var (
 	reConfirmationSubject = regexp.MustCompile(`(?i)Confirmare\s+(?:înregistrare|inregistrare)\s+comand[ăa]\s*#?\s*(\d+)`)
 	reShippedSubject      = regexp.MustCompile(`(?i)Comanda\s+ta\s*#?\s*(\d+)\s+a\s+fost\s+predat[ăa]\s+curierului`)
-	reArrivedBody         = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+([^.\n\r<]+)`)
-	reMarketplaceArrived  = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+Marketplace\s*-[^\n]*,\s*eMAG\s+num[ăa]rul`)
-	reReminderBody        = regexp.MustCompile(`(?i)coletul\s+eMAG(?:\s+Marketplace[^,]*,\s*eMAG)?\s+num[ăa]rul\s+(\d+)\s+te\s+mai\s+a[șs]teapt[ăa]\s+p[âa]n[ăa][^\n\r<]+?[îi]n\s+easybox\s+([^,\n\r<]+)`)
+	// Arrival body captures courier label too ($1). A courier can be "eMAG" or
+	// the marketplace partner ("eMAG Marketplace - PAXYcourier s.r.o."). Since
+	// Sameday splits <strong>…</strong> across lines (htmlToText turns each
+	// `>` into `\n`), we run with (?s) so `.+?` can span newlines.
+	reArrivedBody  = regexp.MustCompile(`(?is)Comanda\s+ta\s+(.+?)\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+easybox\s+([^.\n\r<]+)`)
+	reReminderBody = regexp.MustCompile(`(?is)coletul\s+(.+?)\s+num[ăa]rul\s+(\d+)\s+te\s+mai\s+a[șs]teapt[ăa]\s+p[âa]n[ăa].+?[îi]n\s+easybox\s+([^,\n\r<]+)`)
 
 	reQty      = regexp.MustCompile(`(\d+)\s*buc`)
 	rePriceLei = regexp.MustCompile(`(?i)(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
@@ -81,13 +85,7 @@ func ClassifyEmail(subject, textBody string) string {
 	if reShippedSubject.MatchString(subject) {
 		return "shipped"
 	}
-	if reReminderBody.MatchString(textBody) {
-		return "arrived"
-	}
-	if reMarketplaceArrived.MatchString(textBody) {
-		return ""
-	}
-	if reArrivedBody.MatchString(textBody) {
+	if reReminderBody.MatchString(textBody) || reArrivedBody.MatchString(textBody) {
 		return "arrived"
 	}
 	return ""
@@ -130,22 +128,21 @@ func ParseShipped(subject, htmlBody string) (*ParsedEmail, error) {
 // OrderNumber + ArrivalEasybox + PIN/QR/deadline; shipment matching happens
 // in the store.
 func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
-	var orderNum, easyboxFromBody string
+	var orderNum, easyboxFromBody, courier string
 	if m := reReminderBody.FindStringSubmatch(textBody); m != nil {
-		orderNum = m[1]
-		easyboxFromBody = strings.TrimSpace(m[2])
+		courier = cleanCourier(m[1])
+		orderNum = m[2]
+		easyboxFromBody = strings.TrimSpace(m[3])
 	} else {
-		if reMarketplaceArrived.MatchString(textBody) {
-			return nil, fmt.Errorf("arrived: marketplace (skip)")
-		}
 		m := reArrivedBody.FindStringSubmatch(textBody)
 		if m == nil {
 			return nil, fmt.Errorf("arrived: no order number")
 		}
-		orderNum = m[1]
-		easyboxFromBody = strings.TrimSpace(strings.TrimSuffix(m[2], "."))
+		courier = cleanCourier(m[1])
+		orderNum = m[2]
+		easyboxFromBody = strings.TrimSpace(strings.TrimSuffix(m[3], "."))
 	}
-	pe := &ParsedEmail{Kind: "arrived", OrderNumber: orderNum}
+	pe := &ParsedEmail{Kind: "arrived", OrderNumber: orderNum, ArrivalCourier: courier}
 
 	if dm := reDeadline.FindStringSubmatch(textBody); dm != nil {
 		day, _ := strconv.Atoi(dm[2])
@@ -387,6 +384,21 @@ func sellerFromVanduteBanner(banner string) string {
 		}
 	}
 	return ""
+}
+
+// cleanCourier normalises a courier label scraped from the arrival body. It
+// collapses any whitespace (Sameday splits the strong tag across lines) and
+// drops the trailing ",eMAG" suffix on marketplace labels like
+// "eMAG Marketplace - CIPRICOM SRL,eMAG".
+func cleanCourier(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if i := strings.LastIndex(s, ","); i >= 0 {
+		tail := strings.TrimSpace(s[i+1:])
+		if strings.EqualFold(tail, "eMAG") {
+			s = strings.TrimSpace(s[:i])
+		}
+	}
+	return s
 }
 
 func normalize(s string) string {

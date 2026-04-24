@@ -43,6 +43,13 @@
 
     {{if .HasPickup}}
     <div class="pickup">
+      {{if .CourierLabel}}
+      <div class="courier">
+        <span class="muted small">Livrat de</span>
+        <span class="courier-name">{{.CourierLabel}}</span>
+      </div>
+      {{end}}
+
       {{if .QRURL}}
       <div class="qr-wrap">
         <img src="{{.QRURL}}" alt="QR code" class="qr">
