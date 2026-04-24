@@ -353,7 +353,11 @@ func (w *Web) handlePins(rw http.ResponseWriter, r *http.Request) {
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("X-Robots-Tag", "noindex, nofollow")
-		rw.Header().Set("Referrer-Policy", "no-referrer")
+		// strict-origin-when-cross-origin sends just the Origin (not full
+		// URL) as Referer on cross-origin same-protocol requests. OSM tile
+		// servers reject requests with NO Referer (volunteer-run usage
+		// policy), so the previous "no-referrer" broke /map tiles.
+		rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		h.ServeHTTP(rw, r)
 	})
 }
