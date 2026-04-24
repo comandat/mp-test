@@ -447,7 +447,7 @@ func extractProductRow(tr *goquery.Selection) (Product, bool) {
 	if img := tr.Find("img").First(); img.Length() > 0 {
 		imgURL, _ = img.Attr("src")
 	}
-	if imgURL == "" || !strings.Contains(imgURL, "emagst.akamaized.net") {
+	if imgURL == "" || !strings.Contains(strings.ToLower(imgURL), "emag") {
 		return Product{}, false
 	}
 

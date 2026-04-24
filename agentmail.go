@@ -188,7 +188,12 @@ func (a *AgentMailSync) processMessage(ctx context.Context, meta amMessage) erro
 	if err := a.store.UpsertFromEmail(ctx, kind, parsed); err != nil {
 		return fmt.Errorf("upsert: %w", err)
 	}
-	log.Printf("agentmail: %s order=%s shipments=%d", kind, parsed.OrderNumber, len(parsed.Shipments))
+	products := 0
+	for _, sh := range parsed.Shipments {
+		products += len(sh.Products)
+	}
+	log.Printf("agentmail: %s order=%s shipments=%d products=%d",
+		kind, parsed.OrderNumber, len(parsed.Shipments), products)
 	return a.store.MarkProcessed(ctx, meta.MessageID, kind, parsed.OrderNumber)
 }
 

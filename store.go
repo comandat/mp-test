@@ -202,15 +202,31 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	// Self-heal: if the shipments table is empty but emails_processed has
-	// entries (typical after the multi-shipment schema upgrade — old rows
-	// got consumed before the new tables existed), wipe emails_processed so
-	// the next scan replays every message and repopulates shipments.
-	var shipCount, procCount int
+	// Self-heal: detect post-upgrade stuck states and force re-processing
+	// of every message in the inbox.
+	//
+	//  (a) shipments empty + emails_processed has rows: confirmation/shipped
+	//      emails got consumed before the shipments table even existed.
+	//  (b) shipments has rows but products is empty: the parser found
+	//      delivery groups but rejected every product row (e.g. an old
+	//      image-host filter that no longer matches the live CDN). Wiping
+	//      shipments + emails_processed lets the relaxed parser rebuild from
+	//      scratch.
+	var shipCount, productCount, procCount int
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM shipments`).Scan(&shipCount)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM products`).Scan(&productCount)
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM emails_processed`).Scan(&procCount)
-	if shipCount == 0 && procCount > 0 {
-		log.Printf("migrate: shipments empty, clearing %d emails_processed entries for re-scan", procCount)
+
+	stuckEmpty := shipCount == 0 && procCount > 0
+	stuckNoProducts := shipCount > 0 && productCount == 0
+	if stuckEmpty || stuckNoProducts {
+		log.Printf("migrate: self-heal (shipments=%d products=%d processed=%d) — resetting for re-scan",
+			shipCount, productCount, procCount)
+		if stuckNoProducts {
+			if _, err := s.db.Exec(`DELETE FROM shipments`); err != nil {
+				return fmt.Errorf("migrate: reset shipments: %w", err)
+			}
+		}
 		if _, err := s.db.Exec(`DELETE FROM emails_processed`); err != nil {
 			return fmt.Errorf("migrate: reset emails_processed: %w", err)
 		}
