@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -197,7 +198,24 @@ func (s *Store) migrate() error {
 		}
 	}
 
-	return s.backfillShipments(context.Background())
+	if err := s.backfillShipments(context.Background()); err != nil {
+		return err
+	}
+
+	// Self-heal: if the shipments table is empty but emails_processed has
+	// entries (typical after the multi-shipment schema upgrade — old rows
+	// got consumed before the new tables existed), wipe emails_processed so
+	// the next scan replays every message and repopulates shipments.
+	var shipCount, procCount int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM shipments`).Scan(&shipCount)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM emails_processed`).Scan(&procCount)
+	if shipCount == 0 && procCount > 0 {
+		log.Printf("migrate: shipments empty, clearing %d emails_processed entries for re-scan", procCount)
+		if _, err := s.db.Exec(`DELETE FROM emails_processed`); err != nil {
+			return fmt.Errorf("migrate: reset emails_processed: %w", err)
+		}
+	}
+	return nil
 }
 
 // backfillShipments converts legacy single-delivery orders (from before the
