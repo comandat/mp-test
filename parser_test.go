@@ -98,6 +98,49 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// Mirrors the real "Produse livrate de eMAG" → "Produse vândute de <Seller>"
+// nesting from the 486070431 confirmation email: the outer group delivery is
+// eMAG (so every product in it must be kept), while the inner seller sub-
+// header names a non-eMAG seller and must NOT disqualify the products.
+const confirmationNestedSellerHTML = `<html><body>
+<table>
+<tr><td>Produse livrate de <a>eMAG</a></td></tr>
+<tr><td><table>
+  <tr><td>Livrare în easybox Ariesul Mare</td></tr>
+  <tr><td>Produse vândute de <a>Perfume Carnival</a></td></tr>
+  <tr>
+    <td><a><img src="https://s13emagst.akamaized.net/products/80621/80620880/images/x.jpg" alt="img"></a></td>
+    <td><a title="Apa de Parfum Lattafa, HER CONFESSION, Dama, 100ml">Apa de Parfum Lattafa...</a></td>
+    <td>1&nbsp;buc</td>
+    <td>116,51 LEI</td>
+  </tr>
+  <tr><td colspan="3">Reducere conform voucher: xxxx-xxxx-xxxx-4326</td><td>-50,00 LEI</td></tr>
+  <tr><td colspan="3">Cost livrare și procesare:</td><td>10,00 Lei</td></tr>
+  <tr><td colspan="3">Servicii operationale:</td><td>1,77 Lei</td></tr>
+  <tr><td colspan="3">Total:</td><td>78,28 Lei</td></tr>
+</table></td></tr>
+</table>
+</body></html>`
+
+func TestParseConfirmationNestedSeller(t *testing.T) {
+	pe, err := ParseConfirmation("Confirmare înregistrare comandă #486070431", confirmationNestedSellerHTML)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(pe.Products) != 1 {
+		t.Fatalf("expected 1 product (kept because outer group is eMAG-delivered), got %d: %+v", len(pe.Products), pe.Products)
+	}
+	if !strings.Contains(pe.Products[0].Name, "Lattafa") {
+		t.Errorf("product name: %q", pe.Products[0].Name)
+	}
+	if pe.Products[0].LineTotalBani != 11651 {
+		t.Errorf("product total bani: got %d, want 11651", pe.Products[0].LineTotalBani)
+	}
+	if pe.TotalBani != 7828 {
+		t.Errorf("order total: got %d, want 7828", pe.TotalBani)
+	}
+}
+
 func TestParseConfirmation(t *testing.T) {
 	pe, err := ParseConfirmation("Confirmare înregistrare comandă #485742108", confirmationHTML)
 	if err != nil {

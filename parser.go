@@ -211,6 +211,12 @@ func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
 // extractEmagSections walks <tr> rows in document order, tracks whether
 // the current section (delimited by "Produse ..." banners) is eMAG-delivered,
 // and collects products + the last "Total:" value seen inside an eligible section.
+//
+// Banner semantics:
+//   - "Produse livrate de X" or "Produse vândute și livrate de X" — delivery
+//     group; sets eligibility based on whether X is eMAG.
+//   - "Produse vândute de X" (no "livrate") — seller sub-header inside a
+//     delivery group; inherits the enclosing group's eligibility.
 func extractEmagSections(doc *goquery.Document, pe *ParsedEmail) {
 	eligible := false
 	seen := map[string]bool{}
@@ -218,7 +224,9 @@ func extractEmagSections(doc *goquery.Document, pe *ParsedEmail) {
 
 	doc.Find("tr").Each(func(_ int, tr *goquery.Selection) {
 		if banner, label := matchBanner(tr); banner {
-			eligible = isEmagDelivered(label)
+			if isDeliveryBanner(label) {
+				eligible = isEmagDelivered(label)
+			}
 			currentGroupLabel = label
 			return
 		}
@@ -266,6 +274,18 @@ func matchBanner(tr *goquery.Selection) (ok bool, text string) {
 		return false, ""
 	}
 	return true, t
+}
+
+// isDeliveryBanner identifies banners that announce a delivery group (as
+// opposed to seller sub-headers). Delivery banners mention "livrate".
+func isDeliveryBanner(banner string) bool {
+	l := strings.ToLower(banner)
+	l = strings.ReplaceAll(l, "ă", "a")
+	l = strings.ReplaceAll(l, "â", "a")
+	l = strings.ReplaceAll(l, "î", "i")
+	l = strings.ReplaceAll(l, "ș", "s")
+	l = strings.ReplaceAll(l, "ț", "t")
+	return strings.Contains(l, "livrate")
 }
 
 func isEmagDelivered(banner string) bool {
