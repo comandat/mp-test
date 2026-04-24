@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -495,7 +496,7 @@ func priceToBani(s string) int64 {
 	if err != nil {
 		return 0
 	}
-	return int64(f * 100)
+	return int64(math.Round(f * 100))
 }
 
 // extractStylizedPin finds the 7-box PIN rendered as individual styled <span>

@@ -121,6 +121,64 @@ const nestedSellerHTML = `<html><body>
 </table>
 </body></html>`
 
+// productionProductHTML mirrors the exact shape of a real live email: the
+// product <tr> has 4 <td>s (image, name, qty, price), the image <a> carries
+// both a long sendgrid href AND a title, and the name <a> also carries a
+// title. Whitespace and attributes are messy.
+const productionProductHTML = `<html><body>
+<table>
+<tr><td>Produse vândute și livrate de <a>eMAG</a></td></tr>
+<tr><td><table>
+<tr><td>Livrare în easybox Casa Nasului</td></tr>
+<tr>
+  <td colspan="4" align="center" style="height:5px; font-size:5px; line-height:5px;" class="verticalSpacer5">&nbsp;</td>
+</tr>
+<tr>
+  <td align="left" valign="middle" width="50">
+    <a href="https://u6270107.ct.sendgrid.net/ls/click?upn=u001.xxx" target="_blank" style="text-decoration:none; color:#000000;" title="Alimentator Stabilizat Reglabil, EXCITAT&#xAE;, 30 W, 3V 4.5V 5V 6V 7.5V 9V 12V, Alimentator Transformator Stabilizat cu 14 mufe, adaptor multi-tensiune, AC to DC, pentru routere cu banda LED Camere CCTV TV Box WLAN, Negru">
+      <img src="https://s13emagst.akamaized.net/products/81429/81428839/images/res_8108cec7df18b4862cffa514a24421a8.jpg?width=80&amp;height=80&amp;hash=1C236EC8EB449FCAD65A54FE272E7805" border="0" width="50" alt="img" style="width:100%; max-width:50px;">
+    </a>
+  </td>
+  <td align="left" valign="middle" style="padding-left:8px;font-size:13px; color:#5A5A5A;">
+    <a href="https://u6270107.ct.sendgrid.net/ls/click?upn=u001.yyy" target="_blank" style="text-decoration:none;" title="Alimentator Stabilizat Reglabil, EXCITAT&#xAE;, 30 W, 3V 4.5V 5V 6V 7.5V 9V 12V, Alimentator Transformator Stabilizat cu 14 mufe, adaptor multi-tensiune, AC to DC, pentru routere cu banda LED Camere CCTV TV Box WLAN, Negru">
+      Alimentator Stabilizat Reglabil, EXCI...
+    </a>
+  </td>
+  <td valign="middle" width="50" align="right" style="text-align:right; font-size:13px;">1&nbsp;buc</td>
+  <td valign="middle" width="90" style="text-align:right; font-size:13px;">78,49 LEI</td>
+</tr>
+<tr><td colspan="3">Cost livrare și procesare:</td><td>10,00 Lei</td></tr>
+<tr><td colspan="3">Total:</td><td>88,49 Lei</td></tr>
+</table></td></tr>
+</table>
+</body></html>`
+
+func TestParseConfirmationProductionHTML(t *testing.T) {
+	pe, err := ParseConfirmation("Confirmare înregistrare comandă #999999999", productionProductHTML)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(pe.Shipments) != 1 {
+		t.Fatalf("expected 1 shipment, got %d", len(pe.Shipments))
+	}
+	sh := pe.Shipments[0]
+	if sh.EasyboxName != "Casa Nasului" {
+		t.Errorf("easybox: %q", sh.EasyboxName)
+	}
+	if len(sh.Products) != 1 {
+		t.Fatalf("expected 1 product, got %d — shipment=%+v", len(sh.Products), sh)
+	}
+	if !strings.HasPrefix(sh.Products[0].Name, "Alimentator Stabilizat Reglabil") {
+		t.Errorf("product name: %q", sh.Products[0].Name)
+	}
+	if sh.Products[0].Qty != 1 || sh.Products[0].LineTotalBani != 7849 {
+		t.Errorf("qty/total: %d %d", sh.Products[0].Qty, sh.Products[0].LineTotalBani)
+	}
+	if sh.TotalBani != 8849 {
+		t.Errorf("shipment total: %d", sh.TotalBani)
+	}
+}
+
 func TestClassify(t *testing.T) {
 	cases := []struct {
 		subject, body, want string
