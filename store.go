@@ -629,7 +629,7 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 
 	switch kind {
 	case "confirmation", "shipped":
-		if err := upsertShipmentsTx(ctx, tx, p, now); err != nil {
+		if err := upsertShipmentsTx(ctx, tx, p, kind, now); err != nil {
 			return err
 		}
 	case "arrived":
@@ -641,7 +641,13 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 	return tx.Commit()
 }
 
-func upsertShipmentsTx(ctx context.Context, tx *sql.Tx, p *ParsedEmail, now string) error {
+// upsertShipmentsTx writes/updates the shipments and their products.
+//
+// Products are authoritative from the "confirmation" email (full overwrite).
+// "shipped" emails only insert products if the shipment has none yet, so a
+// later shipped email can never destroy the richer product list (with
+// images, full names) that the confirmation email originally provided.
+func upsertShipmentsTx(ctx context.Context, tx *sql.Tx, p *ParsedEmail, kind, now string) error {
 	for _, sh := range p.Shipments {
 		var id int64
 		err := tx.QueryRowContext(ctx, `SELECT id FROM shipments WHERE order_number=? AND group_index=?`,
@@ -688,15 +694,29 @@ func upsertShipmentsTx(ctx context.Context, tx *sql.Tx, p *ParsedEmail, now stri
 		}
 
 		if len(sh.Products) > 0 {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM products WHERE shipment_id = ?`, id); err != nil {
-				return err
-			}
-			for _, pr := range sh.Products {
-				if _, err := tx.ExecContext(ctx, `
-					INSERT INTO products(shipment_id, order_number, name, image_url, qty, line_total_bani, seller_group)
-					VALUES(?,?,?,?,?,?,?)`,
-					id, p.OrderNumber, pr.Name, pr.ImageURL, pr.Qty, pr.LineTotalBani, pr.SellerGroup); err != nil {
+			// Confirmation: authoritative — overwrite. Shipped: only fill
+			// in if the shipment has no products yet (so a later shipped
+			// email can't destroy confirmation's richer data).
+			writeProducts := kind == "confirmation"
+			if !writeProducts {
+				var existing int
+				if err := tx.QueryRowContext(ctx,
+					`SELECT COUNT(*) FROM products WHERE shipment_id = ?`, id).Scan(&existing); err != nil {
 					return err
+				}
+				writeProducts = existing == 0
+			}
+			if writeProducts {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM products WHERE shipment_id = ?`, id); err != nil {
+					return err
+				}
+				for _, pr := range sh.Products {
+					if _, err := tx.ExecContext(ctx, `
+						INSERT INTO products(shipment_id, order_number, name, image_url, qty, line_total_bani, seller_group)
+						VALUES(?,?,?,?,?,?,?)`,
+						id, p.OrderNumber, pr.Name, pr.ImageURL, pr.Qty, pr.LineTotalBani, pr.SellerGroup); err != nil {
+						return err
+					}
 				}
 			}
 		}
