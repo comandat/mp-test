@@ -17,85 +17,165 @@
 <main class="container">
   {{with .Order}}
 
-  {{if eq .Status "GataDeRidicare"}}
-  <section class="pickup">
-    {{if .QRURL}}
-    <div class="qr-wrap">
-      <img src="{{.QRURL}}" alt="QR code" class="qr">
+  {{$active := activeShipments .Shipments}}
+  {{$dismissed := dismissedShipments .Shipments}}
+  {{$pickedUp := pickedUpShipments .Shipments}}
+
+  {{range $active}}
+  <section class="shipment {{if .HasPickup}}shipment-ready{{end}}">
+    <div class="shipment-head">
+      <div class="shipment-label">{{shipmentLabel .}}</div>
+      <form method="POST" action="/order/{{.OrderNumber}}/shipment/{{.ID}}/dismiss"
+            onsubmit="return confirm('Ignori definitiv livrarea asta?');" class="dismiss-form">
+        <button type="submit" class="btn-x" title="Ignoră livrarea">×</button>
+      </form>
     </div>
-    {{end}}
 
-    {{if .PinCode}}
-    <div class="pin-wrap">
-      <div class="pin-label">PIN:</div>
-      <div class="pin" id="pin">{{.PinCode}}</div>
-      <button type="button" class="btn-ghost" onclick="copyPin()">Copiază</button>
-    </div>
-    {{end}}
-
-    {{if .PickupDeadline}}
-    <div class="deadline-big">
-      <div class="muted small">Ridică până</div>
-      <div>{{formatDeadline .PickupDeadline}}</div>
-      <div class="countdown">{{relativeDeadline .PickupDeadline}}</div>
-    </div>
-    {{end}}
-  </section>
-  {{end}}
-
-  {{if .EasyboxName}}
-  <section class="easybox">
-    <div class="muted small">Easybox</div>
-    <div class="eb-name">{{.EasyboxName}}</div>
-    {{if .EasyboxAddress}}
-    <div class="eb-addr">{{.EasyboxAddress}}</div>
-    {{end}}
-  </section>
-  {{end}}
-
-  {{if .Products}}
-  <section class="products">
-    <div class="muted small">Produse</div>
-    {{range .Products}}
-    <div class="product">
-      {{if .ImageURL}}
-      <img src="{{.ImageURL}}" alt="" class="prod-img">
+    {{if .EasyboxName}}
+    <div class="easybox">
+      <div class="muted small">Easybox</div>
+      <div class="eb-name">{{.EasyboxName}}</div>
+      {{if .EasyboxAddress}}
+      <div class="eb-addr">{{.EasyboxAddress}}</div>
       {{end}}
-      <div class="prod-info">
-        <div class="prod-name">{{.Name}}</div>
-        <div class="muted small">{{.Qty}} buc · {{lei .LineTotalBani}}</div>
-      </div>
     </div>
+    {{end}}
+
+    {{if .HasPickup}}
+    <div class="pickup">
+      {{if .QRURL}}
+      <div class="qr-wrap">
+        <img src="{{.QRURL}}" alt="QR code" class="qr">
+      </div>
+      {{end}}
+
+      {{if .PinCode}}
+      <div class="pin-wrap">
+        <div class="pin-label">PIN:</div>
+        <div class="pin" data-pin="{{.PinCode}}">{{.PinCode}}</div>
+        <button type="button" class="btn-ghost copy-pin">Copiază</button>
+      </div>
+      {{end}}
+
+      {{if .PickupDeadline}}
+      <div class="deadline-big">
+        <div class="muted small">Ridică până</div>
+        <div>{{formatDeadline .PickupDeadline}}</div>
+        <div class="countdown">{{relativeDeadline .PickupDeadline}}</div>
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+
+    {{if .Products}}
+    <div class="products">
+      {{range .Products}}
+      <div class="product">
+        {{if .ImageURL}}
+        <img src="{{.ImageURL}}" alt="" class="prod-img">
+        {{end}}
+        <div class="prod-info">
+          <div class="prod-name">{{.Name}}</div>
+          <div class="muted small">{{.Qty}} buc · {{lei .LineTotalBani}}</div>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+
+    <div class="shipment-total">
+      <span class="muted small">Total livrare</span>
+      <span class="total">{{lei .TotalBani}}</span>
+    </div>
+
+    {{if .HasPickup}}
+    <form method="POST" action="/order/{{.OrderNumber}}/shipment/{{.ID}}/confirm"
+          onsubmit="return confirm('Confirmi că ai ridicat coletul?');" class="confirm-form">
+      <button type="submit" class="btn-primary btn-block">Confirmă ridicarea</button>
+    </form>
     {{end}}
   </section>
   {{end}}
 
   <section class="total-row">
-    <div>Total de plată</div>
+    <div>Total de plată (livrări active)</div>
     <div class="total">{{lei .TotalBani}}</div>
   </section>
 
-  {{if eq .Status "GataDeRidicare"}}
-  <form method="POST" action="/order/{{.OrderNumber}}/confirm" onsubmit="return confirm('Confirmi că ai ridicat coletul?');" class="confirm-form">
-    <button type="submit" class="btn-primary btn-block">Confirmă ridicarea</button>
-  </form>
+  {{if $dismissed}}
+  <details class="dismissed-wrap">
+    <summary>Livrări ignorate ({{len $dismissed}})</summary>
+    {{range $dismissed}}
+    <section class="shipment shipment-dismissed">
+      <div class="shipment-head">
+        <div class="shipment-label">{{shipmentLabel .}}</div>
+        <form method="POST" action="/order/{{.OrderNumber}}/shipment/{{.ID}}/restore" class="dismiss-form">
+          <button type="submit" class="btn-ghost" title="Readu livrarea">↺</button>
+        </form>
+      </div>
+      {{if .EasyboxName}}<div class="muted small">{{.EasyboxName}}</div>{{end}}
+      {{if .Products}}
+      <div class="products">
+        {{range .Products}}
+        <div class="product">
+          {{if .ImageURL}}<img src="{{.ImageURL}}" alt="" class="prod-img">{{end}}
+          <div class="prod-info">
+            <div class="prod-name">{{.Name}}</div>
+            <div class="muted small">{{.Qty}} buc · {{lei .LineTotalBani}}</div>
+          </div>
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+    </section>
+    {{end}}
+  </details>
+  {{end}}
+
+  {{if $pickedUp}}
+  <details class="dismissed-wrap">
+    <summary>Livrări ridicate ({{len $pickedUp}})</summary>
+    {{range $pickedUp}}
+    <section class="shipment shipment-picked">
+      <div class="shipment-head">
+        <div class="shipment-label">{{shipmentLabel .}}</div>
+      </div>
+      {{if .EasyboxName}}<div class="muted small">{{.EasyboxName}}</div>{{end}}
+      {{if .Products}}
+      <div class="products">
+        {{range .Products}}
+        <div class="product">
+          {{if .ImageURL}}<img src="{{.ImageURL}}" alt="" class="prod-img">{{end}}
+          <div class="prod-info">
+            <div class="prod-name">{{.Name}}</div>
+            <div class="muted small">{{.Qty}} buc · {{lei .LineTotalBani}}</div>
+          </div>
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+    </section>
+    {{end}}
+  </details>
   {{end}}
 
   {{end}}
 </main>
 
 <script>
-function copyPin() {
-  const t = document.getElementById('pin').innerText;
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(t).then(() => {
-      const b = event.target;
-      const old = b.innerText;
-      b.innerText = 'Copiat!';
-      setTimeout(() => { b.innerText = old; }, 1500);
-    });
-  }
-}
+document.querySelectorAll('.copy-pin').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const pinEl = btn.parentElement.querySelector('.pin');
+    const t = pinEl.dataset.pin || pinEl.innerText;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(t).then(() => {
+        const old = btn.innerText;
+        btn.innerText = 'Copiat!';
+        setTimeout(() => { btn.innerText = old; }, 1500);
+      });
+    }
+  });
+});
 </script>
 </body>
 </html>

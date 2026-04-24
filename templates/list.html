@@ -21,6 +21,7 @@
   {{end}}
 
   {{range .Orders}}
+  {{$active := activeShipments .Shipments}}
   <a class="card" href="/order/{{.OrderNumber}}">
     <div class="card-head">
       <span class="status-pill {{statusClass .Status}}">{{statusLabel .Status}}</span>
@@ -35,11 +36,9 @@
       <span class="deadline">{{relativeDeadline .PickupDeadline}}</span>
       {{end}}
     </div>
-    {{if .Products}}
     <div class="card-row muted small">
-      {{len .Products}} {{if eq (len .Products) 1}}produs{{else}}produse{{end}}
+      {{len $active}} {{if eq (len $active) 1}}livrare{{else}}livrări{{end}}
     </div>
-    {{end}}
   </a>
   {{end}}
 </main>

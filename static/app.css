@@ -195,3 +195,76 @@ body {
   margin-top: 8px;
   margin-bottom: 20px;
 }
+
+/* Per-shipment card on the order detail page */
+.shipment {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.shipment-ready {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(0,155,40,0.10);
+}
+.shipment-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.shipment-label {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.btn-x {
+  background: transparent;
+  border: 1px solid var(--border);
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+}
+.btn-x:hover, .btn-x:active { background: var(--bg); color: var(--red); border-color: var(--red); }
+.dismiss-form { margin: 0; }
+.shipment .easybox,
+.shipment .pickup,
+.shipment .products {
+  margin: 12px 0 0;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.shipment .products { padding: 4px 0 0; }
+.shipment-total {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 15px;
+}
+.shipment-total .total { font-size: 18px; }
+.shipment-dismissed, .shipment-picked { opacity: 0.7; }
+.dismissed-wrap {
+  margin-top: 18px;
+  background: transparent;
+}
+.dismissed-wrap > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--muted);
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  user-select: none;
+}
+.dismissed-wrap[open] > summary { margin-bottom: 10px; }

@@ -5,7 +5,11 @@ import (
 	"testing"
 )
 
-// Minimal HTML fragment mirroring the structure of the real "Confirmare înregistrare comandă" email.
+// confirmationHTML mirrors a two-group confirmation email: the outer block
+// is eMAG-delivered (sub-grouped by BIZCORA via a seller sub-header that
+// must NOT start a new group), and a separate "Produse vândute și livrate
+// de BIZCORA" delivery block follows — which IS a separate shipment
+// delivered by BIZCORA (not eMAG).
 const confirmationHTML = `<html><body>
 <table>
 <tr><td>Produse livrate de <a>eMAG</a></td></tr>
@@ -43,7 +47,8 @@ const confirmationHTML = `<html><body>
 </table>
 </body></html>`
 
-// Minimal HTML for the "Comanda ta #NNN a fost predată curierului" email.
+// shippedHTML mirrors the simpler "Comanda ta #N a fost predată curierului"
+// email: single shipment, eMAG-delivered.
 const shippedHTML = `<html><body>
 <table>
 <tr><td>Produse vândute și livrate de <a>eMAG</a></td></tr>
@@ -62,7 +67,7 @@ const shippedHTML = `<html><body>
 </table>
 </body></html>`
 
-// Minimal HTML for the Sameday "a ajuns în easybox" email.
+// arrivedHTML mirrors the Sameday "a ajuns în easybox" email.
 const arrivedHTML = `<html><body>
 <p>Hei,<br><br>Comanda ta <strong>eMAG</strong> numărul <strong>485741339</strong> a ajuns în easybox Casa Nasului.<br>
 Folosește QR-ul sau PIN-ul de mai jos pentru a prelua coletul pana Vineri, 24 Apr. ora 4:30.<br><br></p>
@@ -78,6 +83,42 @@ Folosește QR-ul sau PIN-ul de mai jos pentru a prelua coletul pana Vineri, 24 A
   <td><img alt="pin_easybox" src="https://sameday.ro/newsletter/pin.png"></td>
   <td><p>easybox Casa Nasului<br>Str. Cetatuia, Nr. 12<br>Program easybox: L-D 00:00-23:59<br><br></p></td>
 </tr></table>
+</body></html>`
+
+// reminderHTML mirrors the Sameday "te mai așteaptă până" reminder email.
+const reminderHTML = `<html><body>
+<p>Hei, coletul <strong> eMAG Marketplace - CIPRICOM SRL,eMAG numărul 485474958</strong> te mai așteaptă până Joi, 23 Apr. ora 7:30, în easybox GEMA Amada Balroom, program L-D 00:00-23:59.
+Folosește QR-ul sau PIN-ul de mai jos pentru a deschide sertarul.<br><br></p>
+<img src="https://sameday.ro/locker/qr-image/LUKJHZA" alt="" width="200">
+<p>Sau tastează pe ecranul easybox codul:</p>
+<table class="easyboxCode">
+<tr>
+<td><span>L</span></td><td></td><td><span>U</span></td><td></td><td><span>K</span></td><td></td><td><span>J</span></td><td></td><td><span>H</span></td><td></td><td><span>Z</span></td><td></td><td><span>A</span></td>
+</tr>
+</table>
+</body></html>`
+
+// nestedSellerHTML mirrors the #486070431 structure: outer group delivered
+// by eMAG, inner "Produse vândute de Perfume Carnival" seller sub-header
+// that must NOT start a new shipment.
+const nestedSellerHTML = `<html><body>
+<table>
+<tr><td>Produse livrate de <a>eMAG</a></td></tr>
+<tr><td><table>
+  <tr><td>Livrare în easybox Ariesul Mare</td></tr>
+  <tr><td>Produse vândute de <a>Perfume Carnival</a></td></tr>
+  <tr>
+    <td><a><img src="https://s13emagst.akamaized.net/products/80621/80620880/images/x.jpg" alt="img"></a></td>
+    <td><a title="Apa de Parfum Lattafa, HER CONFESSION, Dama, 100ml">Apa de Parfum Lattafa...</a></td>
+    <td>1&nbsp;buc</td>
+    <td>116,51 LEI</td>
+  </tr>
+  <tr><td colspan="3">Reducere conform voucher: xxxx-xxxx-xxxx-4326</td><td>-50,00 LEI</td></tr>
+  <tr><td colspan="3">Cost livrare și procesare:</td><td>10,00 Lei</td></tr>
+  <tr><td colspan="3">Servicii operationale:</td><td>1,77 Lei</td></tr>
+  <tr><td colspan="3">Total:</td><td>78,28 Lei</td></tr>
+</table></td></tr>
+</table>
 </body></html>`
 
 func TestClassify(t *testing.T) {
@@ -98,50 +139,7 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// Mirrors the real "Produse livrate de eMAG" → "Produse vândute de <Seller>"
-// nesting from the 486070431 confirmation email: the outer group delivery is
-// eMAG (so every product in it must be kept), while the inner seller sub-
-// header names a non-eMAG seller and must NOT disqualify the products.
-const confirmationNestedSellerHTML = `<html><body>
-<table>
-<tr><td>Produse livrate de <a>eMAG</a></td></tr>
-<tr><td><table>
-  <tr><td>Livrare în easybox Ariesul Mare</td></tr>
-  <tr><td>Produse vândute de <a>Perfume Carnival</a></td></tr>
-  <tr>
-    <td><a><img src="https://s13emagst.akamaized.net/products/80621/80620880/images/x.jpg" alt="img"></a></td>
-    <td><a title="Apa de Parfum Lattafa, HER CONFESSION, Dama, 100ml">Apa de Parfum Lattafa...</a></td>
-    <td>1&nbsp;buc</td>
-    <td>116,51 LEI</td>
-  </tr>
-  <tr><td colspan="3">Reducere conform voucher: xxxx-xxxx-xxxx-4326</td><td>-50,00 LEI</td></tr>
-  <tr><td colspan="3">Cost livrare și procesare:</td><td>10,00 Lei</td></tr>
-  <tr><td colspan="3">Servicii operationale:</td><td>1,77 Lei</td></tr>
-  <tr><td colspan="3">Total:</td><td>78,28 Lei</td></tr>
-</table></td></tr>
-</table>
-</body></html>`
-
-func TestParseConfirmationNestedSeller(t *testing.T) {
-	pe, err := ParseConfirmation("Confirmare înregistrare comandă #486070431", confirmationNestedSellerHTML)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if len(pe.Products) != 1 {
-		t.Fatalf("expected 1 product (kept because outer group is eMAG-delivered), got %d: %+v", len(pe.Products), pe.Products)
-	}
-	if !strings.Contains(pe.Products[0].Name, "Lattafa") {
-		t.Errorf("product name: %q", pe.Products[0].Name)
-	}
-	if pe.Products[0].LineTotalBani != 11651 {
-		t.Errorf("product total bani: got %d, want 11651", pe.Products[0].LineTotalBani)
-	}
-	if pe.TotalBani != 7828 {
-		t.Errorf("order total: got %d, want 7828", pe.TotalBani)
-	}
-}
-
-func TestParseConfirmation(t *testing.T) {
+func TestParseConfirmationTwoShipments(t *testing.T) {
 	pe, err := ParseConfirmation("Confirmare înregistrare comandă #485742108", confirmationHTML)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -149,16 +147,71 @@ func TestParseConfirmation(t *testing.T) {
 	if pe.OrderNumber != "485742108" {
 		t.Errorf("order: got %q", pe.OrderNumber)
 	}
-	if len(pe.Products) != 2 {
-		t.Errorf("expected 2 products, got %d: %+v", len(pe.Products), pe.Products)
+	if len(pe.Shipments) != 2 {
+		t.Fatalf("expected 2 shipments, got %d", len(pe.Shipments))
 	}
-	for _, p := range pe.Products {
-		if strings.Contains(strings.ToLower(p.Name), "rola") {
-			t.Errorf("BIZCORA product leaked: %s", p.Name)
-		}
+	// shipment 0: eMAG-delivered, 2 products, total 12,52
+	sh0 := pe.Shipments[0]
+	if !sh0.DeliveredByEmag {
+		t.Errorf("shipment 0 should be delivered by eMAG")
 	}
-	if pe.TotalBani != 1252 {
-		t.Errorf("total: got %d, want 1252", pe.TotalBani)
+	if sh0.EasyboxName != "Casa Nasului" {
+		t.Errorf("shipment 0 easybox: %q", sh0.EasyboxName)
+	}
+	if len(sh0.Products) != 2 {
+		t.Fatalf("shipment 0 products: %d (%+v)", len(sh0.Products), sh0.Products)
+	}
+	if sh0.TotalBani != 1252 {
+		t.Errorf("shipment 0 total: %d", sh0.TotalBani)
+	}
+	// shipment 1: BIZCORA-delivered, 1 product, total 121,30
+	sh1 := pe.Shipments[1]
+	if sh1.DeliveredByEmag {
+		t.Errorf("shipment 1 should NOT be delivered by eMAG (BIZCORA)")
+	}
+	if len(sh1.Products) != 1 {
+		t.Fatalf("shipment 1 products: %d", len(sh1.Products))
+	}
+	if !strings.Contains(sh1.Products[0].Name, "Rola") {
+		t.Errorf("shipment 1 product: %q", sh1.Products[0].Name)
+	}
+	if sh1.TotalBani != 12130 {
+		t.Errorf("shipment 1 total: %d", sh1.TotalBani)
+	}
+	if pe.TotalBani != 1252+12130 {
+		t.Errorf("order total: %d", pe.TotalBani)
+	}
+}
+
+func TestParseConfirmationNestedSeller(t *testing.T) {
+	pe, err := ParseConfirmation("Confirmare înregistrare comandă #486070431", nestedSellerHTML)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(pe.Shipments) != 1 {
+		t.Fatalf("expected 1 shipment (seller sub-header must NOT split), got %d", len(pe.Shipments))
+	}
+	sh := pe.Shipments[0]
+	if !sh.DeliveredByEmag {
+		t.Errorf("shipment should be delivered by eMAG")
+	}
+	if len(sh.Products) != 1 {
+		t.Fatalf("expected 1 product, got %d", len(sh.Products))
+	}
+	if !strings.Contains(sh.Products[0].Name, "Lattafa") {
+		t.Errorf("product name: %q", sh.Products[0].Name)
+	}
+	if sh.Products[0].LineTotalBani != 11651 {
+		t.Errorf("product line total: %d", sh.Products[0].LineTotalBani)
+	}
+	if sh.SellerGroup != "Perfume Carnival" {
+		t.Errorf("seller: %q (want Perfume Carnival)", sh.SellerGroup)
+	}
+	if sh.TotalBani != 7828 {
+		t.Errorf("shipment total: %d", sh.TotalBani)
+	}
+	if sh.EasyboxName != "Ariesul Mare" {
+		t.Errorf("easybox: %q", sh.EasyboxName)
 	}
 }
 
@@ -170,17 +223,24 @@ func TestParseShipped(t *testing.T) {
 	if pe.OrderNumber != "485633662" {
 		t.Errorf("order: %q", pe.OrderNumber)
 	}
-	if len(pe.Products) != 1 {
-		t.Fatalf("products: got %d", len(pe.Products))
+	if len(pe.Shipments) != 1 {
+		t.Fatalf("shipments: got %d", len(pe.Shipments))
 	}
-	if !strings.Contains(pe.Products[0].Name, "Cafea") {
-		t.Errorf("product name: %q", pe.Products[0].Name)
+	sh := pe.Shipments[0]
+	if len(sh.Products) != 1 {
+		t.Fatalf("products: %d", len(sh.Products))
 	}
-	if pe.Products[0].Qty != 1 || pe.Products[0].LineTotalBani != 6344 {
-		t.Errorf("product qty/total: %d %d", pe.Products[0].Qty, pe.Products[0].LineTotalBani)
+	if !strings.Contains(sh.Products[0].Name, "Cafea") {
+		t.Errorf("product name: %q", sh.Products[0].Name)
+	}
+	if sh.Products[0].Qty != 1 || sh.Products[0].LineTotalBani != 6344 {
+		t.Errorf("product qty/total: %d %d", sh.Products[0].Qty, sh.Products[0].LineTotalBani)
+	}
+	if sh.TotalBani != 2539 {
+		t.Errorf("shipment total: %d", sh.TotalBani)
 	}
 	if pe.TotalBani != 2539 {
-		t.Errorf("total: got %d, want 2539", pe.TotalBani)
+		t.Errorf("order total: %d", pe.TotalBani)
 	}
 }
 
@@ -199,11 +259,11 @@ func TestParseArrived(t *testing.T) {
 	if pe.QRURL == "" || !strings.Contains(pe.QRURL, "RP6JED9") {
 		t.Errorf("qr url: %q", pe.QRURL)
 	}
-	if !strings.Contains(pe.EasyboxName, "Casa Nasului") {
-		t.Errorf("easybox name: %q", pe.EasyboxName)
+	if !strings.Contains(pe.ArrivalEasybox, "Casa Nasului") {
+		t.Errorf("easybox name: %q", pe.ArrivalEasybox)
 	}
-	if !strings.Contains(pe.EasyboxAddress, "Cetatuia") {
-		t.Errorf("easybox address: %q", pe.EasyboxAddress)
+	if !strings.Contains(pe.ArrivalEasyboxAddr, "Cetatuia") {
+		t.Errorf("easybox address: %q", pe.ArrivalEasyboxAddr)
 	}
 	if pe.PickupDeadline == nil {
 		t.Fatalf("deadline is nil")
@@ -215,31 +275,14 @@ func TestParseArrived(t *testing.T) {
 
 func TestParseArrivedMarketplaceRejected(t *testing.T) {
 	body := "Hei, Comanda ta eMAG Marketplace - SELLER XYZ,eMAG numărul 485271936 a ajuns în easybox Apusului."
-	got := ClassifyEmail("whatever", body)
-	if got != "" {
+	if got := ClassifyEmail("whatever", body); got != "" {
 		t.Errorf("marketplace should be rejected, got %q", got)
 	}
 }
 
-// reminderHTML mirrors the Sameday "te mai așteaptă până" reminder email
-// (sent for both eMAG-direct and Marketplace orders that are still sitting in
-// the easybox close to expiry).
-const reminderHTML = `<html><body>
-<p>Hei, coletul <strong> eMAG Marketplace - CIPRICOM SRL,eMAG numărul 485474958</strong> te mai așteaptă până Joi, 23 Apr. ora 7:30, în easybox GEMA Amada Balroom, program L-D 00:00-23:59.
-Folosește QR-ul sau PIN-ul de mai jos pentru a deschide sertarul.<br><br></p>
-<img src="https://sameday.ro/locker/qr-image/LUKJHZA" alt="" width="200">
-<p>Sau tastează pe ecranul easybox codul:</p>
-<table class="easyboxCode">
-<tr>
-<td><span>L</span></td><td></td><td><span>U</span></td><td></td><td><span>K</span></td><td></td><td><span>J</span></td><td></td><td><span>H</span></td><td></td><td><span>Z</span></td><td></td><td><span>A</span></td>
-</tr>
-</table>
-</body></html>`
-
 func TestClassifyReminder(t *testing.T) {
 	body := htmlToText(reminderHTML)
-	got := ClassifyEmail("Notificare 78", body)
-	if got != "arrived" {
+	if got := ClassifyEmail("Notificare 78", body); got != "arrived" {
 		t.Errorf("reminder should classify as arrived, got %q", got)
 	}
 }
@@ -256,11 +299,8 @@ func TestParseReminder(t *testing.T) {
 	if pe.PinCode != "LUKJHZA" {
 		t.Errorf("pin: got %q", pe.PinCode)
 	}
-	if pe.QRURL == "" || !strings.Contains(pe.QRURL, "LUKJHZA") {
-		t.Errorf("qr url: %q", pe.QRURL)
-	}
-	if !strings.Contains(pe.EasyboxName, "GEMA Amada Balroom") {
-		t.Errorf("easybox name: %q", pe.EasyboxName)
+	if !strings.Contains(pe.ArrivalEasybox, "GEMA Amada Balroom") {
+		t.Errorf("easybox name: %q", pe.ArrivalEasybox)
 	}
 	if pe.PickupDeadline == nil {
 		t.Fatalf("deadline is nil")

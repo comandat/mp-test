@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -29,29 +31,60 @@ func statusRank(s OrderStatus) int {
 	return 0
 }
 
+// Order is an eMAG order with one or more shipments. Aggregate fields
+// (TotalBani, PickupDeadline, EasyboxName…) are derived from active
+// shipments to keep list/map rendering simple.
 type Order struct {
+	OrderNumber string
+	Status      OrderStatus
+	TotalBani   int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Shipments   []Shipment
+
+	// Aggregates for UI shortcuts.
+	EasyboxName    string
+	EasyboxAddress string
+	PickupDeadline *time.Time
+	Lat            *float64
+	Lon            *float64
+}
+
+// Shipment is one delivery group inside an order — products, total, easybox,
+// pickup PIN/QR, and user dismissal state. Arrival emails attach per-shipment
+// PIN/QR/deadline by matching easybox name.
+type Shipment struct {
+	ID              int64
 	OrderNumber     string
-	Status          OrderStatus
+	GroupIndex      int
+	SellerGroup     string
+	DeliveryBy      string
+	DeliveredByEmag bool
 	EasyboxName     string
 	EasyboxAddress  string
+	Lat             *float64
+	Lon             *float64
 	PickupDeadline  *time.Time
 	PinCode         string
 	QRURL           string
 	TotalBani       int64
-	Lat             *float64
-	Lon             *float64
 	PickedUpAt      *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	DismissedAt     *time.Time
 	Products        []Product
 }
 
+// HasPickup is true once Sameday has delivered the shipment to the easybox.
+func (s Shipment) HasPickup() bool { return s.PinCode != "" || s.QRURL != "" }
+
+// Active shipments are those that still need pickup.
+func (s Shipment) Active() bool { return s.DismissedAt == nil && s.PickedUpAt == nil }
+
 type Product struct {
-	Name         string
-	ImageURL     string
-	Qty          int
+	Name          string
+	ImageURL      string
+	Qty           int
 	LineTotalBani int64
-	SellerGroup  string
+	SellerGroup   string
 }
 
 type Store struct {
@@ -71,6 +104,8 @@ func OpenStore(path string) (*Store, error) {
 	return s, nil
 }
 
+func (s *Store) Close() error { return s.db.Close() }
+
 func (s *Store) migrate() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS orders(
@@ -88,16 +123,41 @@ func (s *Store) migrate() error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS products(
+		`CREATE TABLE IF NOT EXISTS shipments(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			order_number TEXT NOT NULL,
+			group_index INTEGER NOT NULL,
+			seller_group TEXT,
+			delivery_by TEXT,
+			delivered_by_emag INTEGER NOT NULL DEFAULT 0,
+			easybox_name TEXT,
+			easybox_address TEXT,
+			lat REAL,
+			lon REAL,
+			pickup_deadline TEXT,
+			pin_code TEXT,
+			qr_url TEXT,
+			total_bani INTEGER NOT NULL DEFAULT 0,
+			picked_up_at TEXT,
+			dismissed_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(order_number, group_index),
+			FOREIGN KEY(order_number) REFERENCES orders(order_number) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS shipments_order_idx ON shipments(order_number)`,
+		`CREATE TABLE IF NOT EXISTS products(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			order_number TEXT,
+			shipment_id INTEGER,
 			name TEXT NOT NULL,
 			image_url TEXT,
 			qty INTEGER NOT NULL,
 			line_total_bani INTEGER NOT NULL,
 			seller_group TEXT,
-			FOREIGN KEY(order_number) REFERENCES orders(order_number) ON DELETE CASCADE
+			FOREIGN KEY(shipment_id) REFERENCES shipments(id) ON DELETE CASCADE
 		)`,
+		`CREATE INDEX IF NOT EXISTS products_shipment_idx ON products(shipment_id)`,
 		`CREATE INDEX IF NOT EXISTS products_order_idx ON products(order_number)`,
 		`CREATE TABLE IF NOT EXISTS emails_processed(
 			message_id TEXT PRIMARY KEY,
@@ -117,10 +177,91 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migrate: %w: %s", err, q)
 		}
 	}
-	return nil
+
+	// Older databases had products.order_number but no shipment_id column,
+	// because shipments didn't exist yet. Add it if missing.
+	if _, err := s.db.Exec(`ALTER TABLE products ADD COLUMN shipment_id INTEGER`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate: add shipment_id: %w", err)
+		}
+	}
+
+	return s.backfillShipments(context.Background())
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+// backfillShipments converts legacy single-delivery orders (from before the
+// shipments table existed) into one synthetic shipment each, carrying over
+// their easybox / PIN / QR / total fields so the UI keeps working.
+func (s *Store) backfillShipments(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT o.order_number,
+		       COALESCE(o.easybox_name,''), COALESCE(o.easybox_address,''),
+		       o.pickup_deadline, COALESCE(o.pin_code,''), COALESCE(o.qr_url,''),
+		       o.lat, o.lon, o.picked_up_at,
+		       o.total_bani, o.created_at, o.updated_at
+		FROM orders o
+		WHERE NOT EXISTS (SELECT 1 FROM shipments WHERE order_number = o.order_number)
+		  AND EXISTS (SELECT 1 FROM products WHERE order_number = o.order_number)`)
+	if err != nil {
+		return fmt.Errorf("backfill list: %w", err)
+	}
+	defer rows.Close()
+
+	type legacy struct {
+		orderNum, easyName, easyAddr, pinCode, qrURL, createdAt, updatedAt string
+		deadline, pickedUp                                                 sql.NullString
+		lat, lon                                                           sql.NullFloat64
+		totalBani                                                          int64
+	}
+	var legacies []legacy
+	for rows.Next() {
+		var r legacy
+		if err := rows.Scan(&r.orderNum, &r.easyName, &r.easyAddr,
+			&r.deadline, &r.pinCode, &r.qrURL,
+			&r.lat, &r.lon, &r.pickedUp,
+			&r.totalBani, &r.createdAt, &r.updatedAt); err != nil {
+			return err
+		}
+		legacies = append(legacies, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, r := range legacies {
+		res, err := s.db.ExecContext(ctx, `
+			INSERT INTO shipments(
+				order_number, group_index,
+				seller_group, delivery_by, delivered_by_emag,
+				easybox_name, easybox_address, lat, lon,
+				pickup_deadline, pin_code, qr_url,
+				total_bani, picked_up_at,
+				created_at, updated_at)
+			VALUES(?, 0, 'eMAG', 'eMAG', 1,
+			       NULLIF(?, ''), NULLIF(?, ''), ?, ?,
+			       ?, NULLIF(?, ''), NULLIF(?, ''),
+			       ?, ?,
+			       ?, ?)`,
+			r.orderNum,
+			r.easyName, r.easyAddr, r.lat, r.lon,
+			r.deadline, r.pinCode, r.qrURL,
+			r.totalBani, r.pickedUp,
+			r.createdAt, r.updatedAt)
+		if err != nil {
+			return fmt.Errorf("backfill insert shipment: %w", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE products SET shipment_id = ? WHERE order_number = ? AND shipment_id IS NULL`,
+			id, r.orderNum); err != nil {
+			return fmt.Errorf("backfill update products: %w", err)
+		}
+	}
+	return nil
+}
 
 // ---------- Emails processed ----------
 
@@ -145,59 +286,101 @@ func (s *Store) MarkProcessed(ctx context.Context, messageID, kind, orderNum str
 	return err
 }
 
-// ---------- Orders ----------
+// ---------- Orders / Shipments ----------
 
 func (s *Store) GetOrder(ctx context.Context, orderNum string) (*Order, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT order_number, status, COALESCE(easybox_name,''), COALESCE(easybox_address,''),
-		       pickup_deadline, COALESCE(pin_code,''), COALESCE(qr_url,''),
-		       total_bani, lat, lon, picked_up_at, created_at, updated_at
+		SELECT order_number, status, total_bani, created_at, updated_at
 		FROM orders WHERE order_number=?`, orderNum)
 	var o Order
-	var deadlineStr, pickedStr sql.NullString
-	var lat, lon sql.NullFloat64
-	var createdStr, updatedStr string
-	var status string
-	if err := row.Scan(&o.OrderNumber, &status, &o.EasyboxName, &o.EasyboxAddress,
-		&deadlineStr, &o.PinCode, &o.QRURL,
-		&o.TotalBani, &lat, &lon, &pickedStr, &createdStr, &updatedStr); err != nil {
+	var status, createdAt, updatedAt string
+	if err := row.Scan(&o.OrderNumber, &status, &o.TotalBani, &createdAt, &updatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
 	o.Status = OrderStatus(status)
-	if deadlineStr.Valid && deadlineStr.String != "" {
-		t, _ := time.Parse(time.RFC3339, deadlineStr.String)
-		o.PickupDeadline = &t
-	}
-	if pickedStr.Valid && pickedStr.String != "" {
-		t, _ := time.Parse(time.RFC3339, pickedStr.String)
-		o.PickedUpAt = &t
-	}
-	if lat.Valid {
-		v := lat.Float64
-		o.Lat = &v
-	}
-	if lon.Valid {
-		v := lon.Float64
-		o.Lon = &v
-	}
-	o.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
-	o.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+	o.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	o.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 
-	prods, err := s.getProducts(ctx, orderNum)
+	ships, err := s.listShipments(ctx, orderNum)
 	if err != nil {
 		return nil, err
 	}
-	o.Products = prods
+	o.Shipments = ships
+	o.applyAggregates()
 	return &o, nil
 }
 
-func (s *Store) getProducts(ctx context.Context, orderNum string) ([]Product, error) {
+func (s *Store) listShipments(ctx context.Context, orderNum string) ([]Shipment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, order_number, group_index,
+		       COALESCE(seller_group,''), COALESCE(delivery_by,''), delivered_by_emag,
+		       COALESCE(easybox_name,''), COALESCE(easybox_address,''),
+		       lat, lon, pickup_deadline,
+		       COALESCE(pin_code,''), COALESCE(qr_url,''),
+		       total_bani, picked_up_at, dismissed_at
+		FROM shipments WHERE order_number=? ORDER BY group_index`, orderNum)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Shipment
+	for rows.Next() {
+		var sh Shipment
+		var deliveredByEmag int
+		var lat, lon sql.NullFloat64
+		var deadline, pickedUp, dismissed sql.NullString
+		if err := rows.Scan(&sh.ID, &sh.OrderNumber, &sh.GroupIndex,
+			&sh.SellerGroup, &sh.DeliveryBy, &deliveredByEmag,
+			&sh.EasyboxName, &sh.EasyboxAddress,
+			&lat, &lon, &deadline,
+			&sh.PinCode, &sh.QRURL,
+			&sh.TotalBani, &pickedUp, &dismissed); err != nil {
+			return nil, err
+		}
+		sh.DeliveredByEmag = deliveredByEmag != 0
+		if lat.Valid {
+			v := lat.Float64
+			sh.Lat = &v
+		}
+		if lon.Valid {
+			v := lon.Float64
+			sh.Lon = &v
+		}
+		if deadline.Valid && deadline.String != "" {
+			t, _ := time.Parse(time.RFC3339, deadline.String)
+			sh.PickupDeadline = &t
+		}
+		if pickedUp.Valid && pickedUp.String != "" {
+			t, _ := time.Parse(time.RFC3339, pickedUp.String)
+			sh.PickedUpAt = &t
+		}
+		if dismissed.Valid && dismissed.String != "" {
+			t, _ := time.Parse(time.RFC3339, dismissed.String)
+			sh.DismissedAt = &t
+		}
+		out = append(out, sh)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		prods, err := s.getProductsByShipment(ctx, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Products = prods
+	}
+	return out, nil
+}
+
+func (s *Store) getProductsByShipment(ctx context.Context, shipmentID int64) ([]Product, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT name, COALESCE(image_url,''), qty, line_total_bani, COALESCE(seller_group,'')
-		FROM products WHERE order_number=? ORDER BY id`, orderNum)
+		FROM products WHERE shipment_id=? ORDER BY id`, shipmentID)
 	if err != nil {
 		return nil, err
 	}
@@ -213,14 +396,76 @@ func (s *Store) getProducts(ctx context.Context, orderNum string) ([]Product, er
 	return out, rows.Err()
 }
 
+// applyAggregates fills the UI-convenience fields on the order from its
+// active shipments. The "active" ordering is: ready-for-pickup > shipped >
+// registered; earliest deadline first. The first active shipment supplies
+// EasyboxName/Address/Deadline/Lat/Lon.
+func (o *Order) applyAggregates() {
+	activeTotal := int64(0)
+	activeCount := 0
+	bestScore := -1
+	var best *Shipment
+	for i := range o.Shipments {
+		sh := &o.Shipments[i]
+		if !sh.Active() {
+			continue
+		}
+		activeCount++
+		activeTotal += sh.TotalBani
+		score := 0
+		if sh.HasPickup() {
+			score = 2
+		} else if sh.EasyboxName != "" {
+			score = 1
+		}
+		if best == nil || score > bestScore ||
+			(score == bestScore && sh.PickupDeadline != nil &&
+				(best.PickupDeadline == nil || sh.PickupDeadline.Before(*best.PickupDeadline))) {
+			best = sh
+			bestScore = score
+		}
+	}
+	if activeCount > 0 {
+		o.TotalBani = activeTotal
+	}
+	if best != nil {
+		o.EasyboxName = best.EasyboxName
+		o.EasyboxAddress = best.EasyboxAddress
+		o.PickupDeadline = best.PickupDeadline
+		o.Lat = best.Lat
+		o.Lon = best.Lon
+	}
+	o.Status = deriveStatus(o.Status, o.Shipments)
+}
+
+// deriveStatus picks the best status across active shipments. Arrived wins
+// over shipped wins over registered. Falls back to the order's base status
+// if no shipment overrides.
+func deriveStatus(base OrderStatus, shipments []Shipment) OrderStatus {
+	best := base
+	for _, sh := range shipments {
+		if !sh.Active() {
+			continue
+		}
+		if sh.HasPickup() {
+			if statusRank(StatusArrived) > statusRank(best) {
+				best = StatusArrived
+			}
+		}
+	}
+	return best
+}
+
+// ListActiveOrders returns every order that still has at least one active
+// (non-dismissed, non-picked-up) shipment, ordered by derived status and
+// earliest deadline.
 func (s *Store) ListActiveOrders(ctx context.Context) ([]*Order, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT order_number FROM orders
-		WHERE picked_up_at IS NULL
-		ORDER BY
-			CASE status WHEN 'GataDeRidicare' THEN 1 WHEN 'InLivrare' THEN 2 WHEN 'Inregistrata' THEN 3 ELSE 4 END,
-			COALESCE(pickup_deadline, '9999') ASC,
-			created_at DESC`)
+		SELECT DISTINCT o.order_number
+		FROM orders o
+		JOIN shipments sh ON sh.order_number = o.order_number
+		WHERE sh.picked_up_at IS NULL AND sh.dismissed_at IS NULL
+		ORDER BY o.updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -246,11 +491,44 @@ func (s *Store) ListActiveOrders(ctx context.Context) ([]*Order, error) {
 			out = append(out, o)
 		}
 	}
+	// Stable sort: GataDeRidicare first, then InLivrare, then Inregistrata;
+	// within a tier, earliest pickup deadline first.
+	sortOrders(out)
 	return out, nil
 }
 
-// UpsertFromEmail applies an email-derived update to an order, respecting state ordering.
-// kind: "confirmation" | "shipped" | "arrived"
+func sortOrders(os []*Order) {
+	// small, so bubble-sort keeps it readable
+	for i := 0; i < len(os); i++ {
+		for j := i + 1; j < len(os); j++ {
+			if orderLess(os[j], os[i]) {
+				os[i], os[j] = os[j], os[i]
+			}
+		}
+	}
+}
+
+func orderLess(a, b *Order) bool {
+	ra, rb := statusRank(a.Status), statusRank(b.Status)
+	if ra != rb {
+		return ra > rb // higher rank first
+	}
+	if a.PickupDeadline != nil && b.PickupDeadline != nil {
+		return a.PickupDeadline.Before(*b.PickupDeadline)
+	}
+	if a.PickupDeadline != nil {
+		return true
+	}
+	if b.PickupDeadline != nil {
+		return false
+	}
+	return a.UpdatedAt.After(b.UpdatedAt)
+}
+
+// UpsertFromEmail applies an email-derived update. Confirmation/shipped
+// emails rebuild the shipments and their product lists. Arrival emails
+// attach PIN/QR/deadline to the first matching active shipment (by easybox
+// name) that doesn't already have one.
 func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -261,17 +539,10 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 	defer tx.Rollback()
 
 	var existingStatus string
-	var pickedUp sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT status, picked_up_at FROM orders WHERE order_number=?`, p.OrderNumber).
-		Scan(&existingStatus, &pickedUp)
-	isNew := err == sql.ErrNoRows
-	if err != nil && err != sql.ErrNoRows {
+	err = tx.QueryRowContext(ctx, `SELECT status FROM orders WHERE order_number=?`, p.OrderNumber).Scan(&existingStatus)
+	isNew := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
-	}
-
-	// Do not resurrect picked-up orders.
-	if pickedUp.Valid && pickedUp.String != "" {
-		return tx.Commit()
 	}
 
 	var newStatus OrderStatus
@@ -286,91 +557,260 @@ func (s *Store) UpsertFromEmail(ctx context.Context, kind string, p *ParsedEmail
 		return fmt.Errorf("unknown email kind: %s", kind)
 	}
 
-	// State never moves backward.
 	finalStatus := newStatus
-	if !isNew {
-		if statusRank(OrderStatus(existingStatus)) > statusRank(newStatus) {
-			finalStatus = OrderStatus(existingStatus)
-		}
+	if !isNew && statusRank(OrderStatus(existingStatus)) > statusRank(newStatus) {
+		finalStatus = OrderStatus(existingStatus)
 	}
 
 	if isNew {
-		_, err = tx.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO orders(order_number, status, total_bani, created_at, updated_at)
 			VALUES(?, ?, ?, ?, ?)`,
-			p.OrderNumber, string(finalStatus), p.TotalBani, now, now)
-		if err != nil {
+			p.OrderNumber, string(finalStatus), p.TotalBani, now, now); err != nil {
 			return err
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE orders SET status=?, updated_at=? WHERE order_number=?`,
-			string(finalStatus), now, p.OrderNumber)
-		if err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE orders SET status=?, updated_at=? WHERE order_number=?`,
+			string(finalStatus), now, p.OrderNumber); err != nil {
 			return err
 		}
 	}
-
-	// Update total from any email that has it.
 	if p.TotalBani > 0 {
-		_, err = tx.ExecContext(ctx, `UPDATE orders SET total_bani=?, updated_at=? WHERE order_number=?`,
-			p.TotalBani, now, p.OrderNumber)
-		if err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE orders SET total_bani=?, updated_at=? WHERE order_number=?`,
+			p.TotalBani, now, p.OrderNumber); err != nil {
 			return err
 		}
 	}
 
-	// Arrived email carries PIN, QR, deadline, easybox info. Reminders ("te mai
-	// așteaptă") repeat the same data minus the easybox address — only overwrite
-	// fields when the new value is non-empty so a later reminder does not erase
-	// info captured from the original arrival.
-	if kind == "arrived" {
-		var deadline sql.NullString
-		if p.PickupDeadline != nil {
-			deadline = sql.NullString{String: p.PickupDeadline.UTC().Format(time.RFC3339), Valid: true}
-		}
-		_, err = tx.ExecContext(ctx, `
-			UPDATE orders
-			SET easybox_name    = CASE WHEN ? <> '' THEN ? ELSE easybox_name END,
-			    easybox_address = CASE WHEN ? <> '' THEN ? ELSE easybox_address END,
-			    pickup_deadline = COALESCE(?, pickup_deadline),
-			    pin_code        = CASE WHEN ? <> '' THEN ? ELSE pin_code END,
-			    qr_url          = CASE WHEN ? <> '' THEN ? ELSE qr_url END,
-			    updated_at      = ?
-			WHERE order_number  = ?`,
-			p.EasyboxName, p.EasyboxName,
-			p.EasyboxAddress, p.EasyboxAddress,
-			deadline,
-			p.PinCode, p.PinCode,
-			p.QRURL, p.QRURL,
-			now, p.OrderNumber)
-		if err != nil {
+	switch kind {
+	case "confirmation", "shipped":
+		if err := upsertShipmentsTx(ctx, tx, p, now); err != nil {
 			return err
 		}
-	}
-
-	// Replace product list from the latest confirmation/shipped email that has products.
-	if len(p.Products) > 0 && (kind == "confirmation" || kind == "shipped") {
-		_, err = tx.ExecContext(ctx, `DELETE FROM products WHERE order_number=?`, p.OrderNumber)
-		if err != nil {
+	case "arrived":
+		if err := attachArrivalTx(ctx, tx, p, now); err != nil {
 			return err
-		}
-		for _, pr := range p.Products {
-			_, err = tx.ExecContext(ctx, `
-				INSERT INTO products(order_number, name, image_url, qty, line_total_bani, seller_group)
-				VALUES(?,?,?,?,?,?)`,
-				p.OrderNumber, pr.Name, pr.ImageURL, pr.Qty, pr.LineTotalBani, pr.SellerGroup)
-			if err != nil {
-				return err
-			}
 		}
 	}
 
 	return tx.Commit()
 }
 
-func (s *Store) MarkPickedUp(ctx context.Context, orderNum string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE orders SET picked_up_at=?, updated_at=? WHERE order_number=?`,
-		time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), orderNum)
+func upsertShipmentsTx(ctx context.Context, tx *sql.Tx, p *ParsedEmail, now string) error {
+	for _, sh := range p.Shipments {
+		var id int64
+		err := tx.QueryRowContext(ctx, `SELECT id FROM shipments WHERE order_number=? AND group_index=?`,
+			p.OrderNumber, sh.GroupIndex).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			res, err := tx.ExecContext(ctx, `
+				INSERT INTO shipments(
+					order_number, group_index,
+					seller_group, delivery_by, delivered_by_emag,
+					easybox_name, total_bani,
+					created_at, updated_at)
+				VALUES(?,?,?,?,?,?,?,?,?)`,
+				p.OrderNumber, sh.GroupIndex,
+				sh.SellerGroup, sh.DeliveryBy, boolInt(sh.DeliveredByEmag),
+				nullify(sh.EasyboxName), sh.TotalBani,
+				now, now)
+			if err != nil {
+				return err
+			}
+			id, err = res.LastInsertId()
+			if err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE shipments
+				SET seller_group = CASE WHEN ? <> '' THEN ? ELSE seller_group END,
+				    delivery_by  = CASE WHEN ? <> '' THEN ? ELSE delivery_by END,
+				    delivered_by_emag = ?,
+				    easybox_name = CASE WHEN ? <> '' THEN ? ELSE easybox_name END,
+				    total_bani = CASE WHEN ? > 0 THEN ? ELSE total_bani END,
+				    updated_at = ?
+				WHERE id = ?`,
+				sh.SellerGroup, sh.SellerGroup,
+				sh.DeliveryBy, sh.DeliveryBy,
+				boolInt(sh.DeliveredByEmag),
+				sh.EasyboxName, sh.EasyboxName,
+				sh.TotalBani, sh.TotalBani,
+				now, id); err != nil {
+				return err
+			}
+		}
+
+		if len(sh.Products) > 0 {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM products WHERE shipment_id = ?`, id); err != nil {
+				return err
+			}
+			for _, pr := range sh.Products {
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO products(shipment_id, order_number, name, image_url, qty, line_total_bani, seller_group)
+					VALUES(?,?,?,?,?,?,?)`,
+					id, p.OrderNumber, pr.Name, pr.ImageURL, pr.Qty, pr.LineTotalBani, pr.SellerGroup); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// attachArrivalTx assigns PIN/QR/deadline to the best matching shipment for
+// an arrival/reminder email. Preference order:
+//  1. Non-dismissed, non-picked-up, no PIN yet, matching easybox name.
+//  2. Non-dismissed, non-picked-up, already has a PIN that matches (reminder
+//     refresh).
+//  3. Non-dismissed, non-picked-up (easybox unknown / names don't match).
+//
+// If nothing matches we silently drop the arrival — the user likely dismissed
+// everything they didn't want.
+func attachArrivalTx(ctx context.Context, tx *sql.Tx, p *ParsedEmail, now string) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, COALESCE(easybox_name,''), COALESCE(pin_code,''),
+		       picked_up_at, dismissed_at
+		FROM shipments
+		WHERE order_number=?
+		ORDER BY group_index`, p.OrderNumber)
+	if err != nil {
+		return err
+	}
+	type cand struct {
+		id       int64
+		easybox  string
+		pin      string
+		pickedUp bool
+		dismiss  bool
+	}
+	var cands []cand
+	for rows.Next() {
+		var c cand
+		var pickedUp, dismissed sql.NullString
+		if err := rows.Scan(&c.id, &c.easybox, &c.pin, &pickedUp, &dismissed); err != nil {
+			rows.Close()
+			return err
+		}
+		c.pickedUp = pickedUp.Valid && pickedUp.String != ""
+		c.dismiss = dismissed.Valid && dismissed.String != ""
+		cands = append(cands, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	target := int64(-1)
+	pinFromURL := pinFromQRURL(p.QRURL)
+
+	// 2. PIN match: reminder for a shipment we already set up.
+	if pinFromURL != "" {
+		for _, c := range cands {
+			if c.pickedUp || c.dismiss {
+				continue
+			}
+			if strings.EqualFold(c.pin, pinFromURL) {
+				target = c.id
+				break
+			}
+		}
+	}
+	// 1. Easybox match + no PIN yet.
+	if target < 0 && p.ArrivalEasybox != "" {
+		for _, c := range cands {
+			if c.pickedUp || c.dismiss {
+				continue
+			}
+			if c.pin != "" {
+				continue
+			}
+			if easyboxesMatch(c.easybox, p.ArrivalEasybox) {
+				target = c.id
+				break
+			}
+		}
+	}
+	// 3. Fallback: any active shipment with no PIN yet.
+	if target < 0 {
+		for _, c := range cands {
+			if c.pickedUp || c.dismiss {
+				continue
+			}
+			if c.pin == "" {
+				target = c.id
+				break
+			}
+		}
+	}
+	if target < 0 {
+		return nil
+	}
+
+	var deadline sql.NullString
+	if p.PickupDeadline != nil {
+		deadline = sql.NullString{String: p.PickupDeadline.UTC().Format(time.RFC3339), Valid: true}
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE shipments
+		SET easybox_name    = CASE WHEN ? <> '' THEN ? ELSE easybox_name END,
+		    easybox_address = CASE WHEN ? <> '' THEN ? ELSE easybox_address END,
+		    pickup_deadline = COALESCE(?, pickup_deadline),
+		    pin_code        = CASE WHEN ? <> '' THEN ? ELSE pin_code END,
+		    qr_url          = CASE WHEN ? <> '' THEN ? ELSE qr_url END,
+		    updated_at      = ?
+		WHERE id = ?`,
+		p.ArrivalEasybox, p.ArrivalEasybox,
+		p.ArrivalEasyboxAddr, p.ArrivalEasyboxAddr,
+		deadline,
+		p.PinCode, p.PinCode,
+		p.QRURL, p.QRURL,
+		now, target)
+	return err
+}
+
+func pinFromQRURL(u string) string {
+	if u == "" {
+		return ""
+	}
+	if m := reQRURL.FindStringSubmatch(u); m != nil {
+		return strings.ToUpper(m[2])
+	}
+	return ""
+}
+
+func easyboxesMatch(a, b string) bool {
+	return normalize(strings.TrimSpace(a)) == normalize(strings.TrimSpace(b)) && a != ""
+}
+
+// ---------- Dismiss / pickup (per-shipment) ----------
+
+func (s *Store) DismissShipment(ctx context.Context, orderNum string, shipmentID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE shipments SET dismissed_at=?, updated_at=?
+		WHERE id=? AND order_number=?`,
+		time.Now().UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
+		shipmentID, orderNum)
+	return err
+}
+
+func (s *Store) RestoreShipment(ctx context.Context, orderNum string, shipmentID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE shipments SET dismissed_at=NULL, updated_at=?
+		WHERE id=? AND order_number=?`,
+		time.Now().UTC().Format(time.RFC3339),
+		shipmentID, orderNum)
+	return err
+}
+
+func (s *Store) MarkShipmentPickedUp(ctx context.Context, orderNum string, shipmentID int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE shipments SET picked_up_at=?, updated_at=?
+		WHERE id=? AND order_number=?`,
+		now, now, shipmentID, orderNum)
 	return err
 }
 
@@ -399,11 +839,13 @@ func (s *Store) GeocodeSave(ctx context.Context, address string, lat, lon float6
 	return err
 }
 
-// AddressesWithoutCoords returns distinct easybox addresses of active orders lacking lat/lon.
+// AddressesWithoutCoords returns distinct easybox addresses of active
+// shipments lacking lat/lon.
 func (s *Store) AddressesWithoutCoords(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT easybox_address FROM orders
-		WHERE picked_up_at IS NULL AND easybox_address IS NOT NULL AND easybox_address <> ''
+		SELECT DISTINCT easybox_address FROM shipments
+		WHERE picked_up_at IS NULL AND dismissed_at IS NULL
+		  AND easybox_address IS NOT NULL AND easybox_address <> ''
 		  AND (lat IS NULL OR lon IS NULL)`)
 	if err != nil {
 		return nil, err
@@ -420,11 +862,26 @@ func (s *Store) AddressesWithoutCoords(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// ApplyCoordsToAddress sets lat/lon on every active order matching the given address.
+// ApplyCoordsToAddress sets lat/lon on every active shipment matching the
+// given address.
 func (s *Store) ApplyCoordsToAddress(ctx context.Context, address string, lat, lon float64) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE orders SET lat=?, lon=?, updated_at=?
-		WHERE easybox_address=? AND picked_up_at IS NULL`,
+		UPDATE shipments SET lat=?, lon=?, updated_at=?
+		WHERE easybox_address=? AND picked_up_at IS NULL AND dismissed_at IS NULL`,
 		lat, lon, time.Now().UTC().Format(time.RFC3339), address)
 	return err
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func nullify(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

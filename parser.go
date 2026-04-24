@@ -10,30 +10,44 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
+// ParsedEmail is the structured form of any order email we understand.
+//
+// Confirmation and shipped emails populate Shipments (one per delivery group)
+// together with OrderNumber and TotalBani. Arrived emails populate the
+// arrival-only fields (ArrivalEasybox, PinCode, QRURL, PickupDeadline); the
+// store then matches the arrival to a specific shipment by easybox name.
 type ParsedEmail struct {
-	Kind           string // confirmation | shipped | arrived
-	OrderNumber    string
-	Products       []Product
-	TotalBani      int64
-	EasyboxName    string
-	EasyboxAddress string
-	PickupDeadline *time.Time
-	PinCode        string
-	QRURL          string
+	Kind        string // confirmation | shipped | arrived
+	OrderNumber string
+	TotalBani   int64
+	Shipments   []ParsedShipment
+
+	// Arrival-only fields.
+	ArrivalEasybox     string
+	ArrivalEasyboxAddr string
+	PickupDeadline     *time.Time
+	PinCode            string
+	QRURL              string
+}
+
+// ParsedShipment is a single delivery group from a confirmation/shipped email.
+// It carries its own products, total, easybox name and seller/courier labels.
+type ParsedShipment struct {
+	GroupIndex      int
+	DeliveryBy      string // who ships (eMAG / seller name)
+	DeliveredByEmag bool
+	SellerGroup     string // who sold the items (often same as DeliveryBy)
+	EasyboxName     string
+	Products        []Product
+	TotalBani       int64
 }
 
 var (
 	reConfirmationSubject = regexp.MustCompile(`(?i)Confirmare\s+(?:înregistrare|inregistrare)\s+comand[ăa]\s*#?\s*(\d+)`)
 	reShippedSubject      = regexp.MustCompile(`(?i)Comanda\s+ta\s*#?\s*(\d+)\s+a\s+fost\s+predat[ăa]\s+curierului`)
-	// Arrival: "Comanda ta eMAG numărul X a ajuns în easybox Y"
-	reArrivedBody = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+([^.\n\r<]+)`)
-	// Marketplace arrival (skipped — not the products user cares about):
-	// "Comanda ta eMAG Marketplace - SELLER,eMAG numărul X a ajuns ..."
-	reMarketplaceArrived = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+Marketplace\s*-[^\n]*,\s*eMAG\s+num[ăa]rul`)
-	// Reminder (kept regardless of marketplace — it means the package is sitting in
-	// the easybox close to expiry and the user needs to act):
-	// "coletul eMAG [Marketplace - SELLER,eMAG] numărul X te mai așteaptă până ... în easybox Y"
-	reReminderBody = regexp.MustCompile(`(?i)coletul\s+eMAG(?:\s+Marketplace[^,]*,\s*eMAG)?\s+num[ăa]rul\s+(\d+)\s+te\s+mai\s+a[șs]teapt[ăa]\s+p[âa]n[ăa][^\n\r<]+?[îi]n\s+easybox\s+([^,\n\r<]+)`)
+	reArrivedBody         = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+num[ăa]rul\s+(\d+)\s+a\s+ajuns\s+[îi]n\s+([^.\n\r<]+)`)
+	reMarketplaceArrived  = regexp.MustCompile(`(?i)Comanda\s+ta\s+eMAG\s+Marketplace\s*-[^\n]*,\s*eMAG\s+num[ăa]rul`)
+	reReminderBody        = regexp.MustCompile(`(?i)coletul\s+eMAG(?:\s+Marketplace[^,]*,\s*eMAG)?\s+num[ăa]rul\s+(\d+)\s+te\s+mai\s+a[șs]teapt[ăa]\s+p[âa]n[ăa][^\n\r<]+?[îi]n\s+easybox\s+([^,\n\r<]+)`)
 
 	reQty      = regexp.MustCompile(`(\d+)\s*buc`)
 	rePriceLei = regexp.MustCompile(`(?i)(-?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?)\s*LEI`)
@@ -41,6 +55,7 @@ var (
 	reDeadline = regexp.MustCompile(`(?i)p[âa]n[ăa]\s+([A-Za-zÎÂȘȚăâîșț]+),?\s+(\d{1,2})\s+([A-Za-zăâîșț]+)\.?\s+ora\s+(\d{1,2}):(\d{2})`)
 	reQRURL    = regexp.MustCompile(`(?i)(https?://[^"'\s]*?/qr-image/([A-Z0-9]+))`)
 	reQRImg    = regexp.MustCompile(`(?i)<img[^>]+src="(https?://[^"]*?qr[^"]*)"`)
+	reEasybox  = regexp.MustCompile(`(?i)Livrare\s+[îi]n\s+easybox\s+(.+?)\s*$`)
 )
 
 var roMonths = map[string]time.Month{
@@ -58,7 +73,7 @@ var roMonths = map[string]time.Month{
 	"dec": time.December, "decembrie": time.December,
 }
 
-// ClassifyEmail decides the email type. Body is plain-text or HTML-stripped text.
+// ClassifyEmail decides the email type from subject + body text.
 func ClassifyEmail(subject, textBody string) string {
 	if reConfirmationSubject.MatchString(subject) {
 		return "confirmation"
@@ -66,12 +81,9 @@ func ClassifyEmail(subject, textBody string) string {
 	if reShippedSubject.MatchString(subject) {
 		return "shipped"
 	}
-	// Sameday reminder ("te mai așteaptă") — kept for both eMAG and Marketplace,
-	// because it means the package is in the easybox waiting to expire.
 	if reReminderBody.MatchString(textBody) {
 		return "arrived"
 	}
-	// Arrival ("a ajuns") — only for eMAG-direct, marketplace arrivals skipped.
 	if reMarketplaceArrived.MatchString(textBody) {
 		return ""
 	}
@@ -82,7 +94,6 @@ func ClassifyEmail(subject, textBody string) string {
 }
 
 // ParseConfirmation handles "Confirmare înregistrare comandă #NNN".
-// Keeps products in sections whose banner contains "livrate de eMAG".
 func ParseConfirmation(subject, htmlBody string) (*ParsedEmail, error) {
 	m := reConfirmationSubject.FindStringSubmatch(subject)
 	if m == nil {
@@ -93,12 +104,13 @@ func ParseConfirmation(subject, htmlBody string) (*ParsedEmail, error) {
 	if err != nil {
 		return nil, err
 	}
-	extractEmagSections(doc, pe)
+	pe.Shipments = extractShipments(doc)
+	pe.TotalBani = sumShipmentTotals(pe.Shipments)
 	return pe, nil
 }
 
-// ParseShipped handles "Comanda ta #NNN a fost predată curierului".
-// All products listed here are eMAG-delivered by definition.
+// ParseShipped handles "Comanda ta #NNN a fost predată curierului". Shape is
+// the same as confirmation emails, so the same extractor is reused.
 func ParseShipped(subject, htmlBody string) (*ParsedEmail, error) {
 	m := reShippedSubject.FindStringSubmatch(subject)
 	if m == nil {
@@ -109,16 +121,14 @@ func ParseShipped(subject, htmlBody string) (*ParsedEmail, error) {
 	if err != nil {
 		return nil, err
 	}
-	extractEmagSections(doc, pe)
+	pe.Shipments = extractShipments(doc)
+	pe.TotalBani = sumShipmentTotals(pe.Shipments)
 	return pe, nil
 }
 
-// ParseArrived handles both Sameday variants:
-//   - arrival: "Comanda ta eMAG numărul X a ajuns în easybox Y"
-//   - reminder: "coletul eMAG ... numărul X te mai așteaptă până ... în easybox Y"
-//
-// Marketplace arrivals are rejected; marketplace reminders are kept (the user
-// still needs to pick the package up before it expires).
+// ParseArrived handles both Sameday variants (arrival + reminder). It fills
+// OrderNumber + ArrivalEasybox + PIN/QR/deadline; shipment matching happens
+// in the store.
 func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
 	var orderNum, easyboxFromBody string
 	if m := reReminderBody.FindStringSubmatch(textBody); m != nil {
@@ -137,7 +147,6 @@ func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
 	}
 	pe := &ParsedEmail{Kind: "arrived", OrderNumber: orderNum}
 
-	// Deadline
 	if dm := reDeadline.FindStringSubmatch(textBody); dm != nil {
 		day, _ := strconv.Atoi(dm[2])
 		hour, _ := strconv.Atoi(dm[4])
@@ -156,7 +165,6 @@ func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
 		}
 	}
 
-	// QR URL — look for <img src="...qr-image/PIN..."> or generic "...qr..."
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
 	if err == nil {
 		doc.Find("img").EachWithBreak(func(_ int, img *goquery.Selection) bool {
@@ -173,7 +181,6 @@ func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
 		})
 	}
 	if pe.QRURL == "" {
-		// Fallback regex on raw html.
 		if m := reQRURL.FindStringSubmatch(htmlBody); m != nil {
 			pe.QRURL = m[1]
 		} else if m := reQRImg.FindStringSubmatch(htmlBody); m != nil {
@@ -181,56 +188,71 @@ func ParseArrived(htmlBody, textBody string) (*ParsedEmail, error) {
 		}
 	}
 
-	// PIN: prefer extracting from the QR URL (e.g. ".../qr-image/RP6JED9")
 	if pe.QRURL != "" {
 		if m := reQRURL.FindStringSubmatch(pe.QRURL); m != nil {
 			pe.PinCode = strings.ToUpper(m[2])
 		}
 	}
-	// Fallback: scan HTML for the stylized PIN table (7 boxes with single chars)
 	if pe.PinCode == "" && doc != nil {
 		pe.PinCode = extractStylizedPin(doc)
 	}
 
-	// Easybox name + address: take the <p> next to the <img alt="pin_easybox">
-	// (only present in arrival emails; reminders only mention easybox name inline).
 	if doc != nil {
 		name, addr := extractEasyboxFromHTML(doc)
-		pe.EasyboxName = name
-		pe.EasyboxAddress = addr
+		pe.ArrivalEasybox = name
+		pe.ArrivalEasyboxAddr = addr
 	}
-	if pe.EasyboxName == "" {
-		pe.EasyboxName = easyboxFromBody
+	if pe.ArrivalEasybox == "" {
+		pe.ArrivalEasybox = easyboxFromBody
 	}
 
 	return pe, nil
 }
 
-// ---------- helpers ----------
+// ---------- shipment extraction ----------
 
-// extractEmagSections walks <tr> rows in document order, tracks whether
-// the current section (delimited by "Produse ..." banners) is eMAG-delivered,
-// and collects products + the last "Total:" value seen inside an eligible section.
-//
-// Banner semantics:
-//   - "Produse livrate de X" or "Produse vândute și livrate de X" — delivery
-//     group; sets eligibility based on whether X is eMAG.
-//   - "Produse vândute de X" (no "livrate") — seller sub-header inside a
-//     delivery group; inherits the enclosing group's eligibility.
-func extractEmagSections(doc *goquery.Document, pe *ParsedEmail) {
-	eligible := false
-	seen := map[string]bool{}
-	var currentGroupLabel string
+// extractShipments walks <tr> rows in document order and returns one
+// ParsedShipment per delivery group. A new shipment starts whenever a
+// "Produse livrate de X" or "Produse vândute și livrate de X" banner is
+// encountered. Seller sub-headers ("Produse vândute de X" without "livrate")
+// update the current shipment's seller label but never start a new group.
+func extractShipments(doc *goquery.Document) []ParsedShipment {
+	var shipments []ParsedShipment
+	var cur *ParsedShipment
+	seenProduct := map[string]bool{}
 
-	doc.Find("tr").Each(func(_ int, tr *goquery.Selection) {
-		if banner, label := matchBanner(tr); banner {
-			if isDeliveryBanner(label) {
-				eligible = isEmagDelivered(label)
-			}
-			currentGroupLabel = label
+	finish := func() {
+		if cur == nil {
 			return
 		}
-		if !eligible {
+		shipments = append(shipments, *cur)
+		cur = nil
+	}
+
+	doc.Find("tr").Each(func(_ int, tr *goquery.Selection) {
+		// Skip rows that wrap other rows (their .Text() would otherwise
+		// concatenate all descendants and muddle easybox / Total detection).
+		if tr.Find("tr").Length() > 0 {
+			return
+		}
+		if banner, label := matchBanner(tr); banner {
+			if isDeliveryBanner(label) {
+				finish()
+				cur = &ParsedShipment{
+					GroupIndex:      len(shipments),
+					DeliveryBy:      deliveryPartyFromBanner(label),
+					DeliveredByEmag: isEmagDelivered(label),
+					SellerGroup:     sellerFromBanner(label),
+				}
+			} else if cur != nil {
+				// Seller sub-header inside the current shipment.
+				if seller := sellerFromVanduteBanner(label); seller != "" {
+					cur.SellerGroup = seller
+				}
+			}
+			return
+		}
+		if cur == nil {
 			return
 		}
 
@@ -239,25 +261,44 @@ func extractEmagSections(doc *goquery.Document, pe *ParsedEmail) {
 			return
 		}
 
-		// Capture total-ish rows (only when eligible)
-		if tm := reTotalLei.FindStringSubmatch(text); tm != nil && isTotalRow(text) {
-			v := priceToBani(tm[1])
-			if v > 0 {
-				pe.TotalBani = v
+		// "Livrare în easybox X"
+		if cur.EasyboxName == "" {
+			oneLine := strings.Join(strings.Fields(text), " ")
+			if em := reEasybox.FindStringSubmatch(oneLine); em != nil {
+				cur.EasyboxName = strings.TrimSpace(em[1])
+				return
 			}
 		}
 
+		// "Total: X Lei" — not a product row (we check that first)
+		if tm := reTotalLei.FindStringSubmatch(text); tm != nil && isTotalRow(text) {
+			if v := priceToBani(tm[1]); v > 0 {
+				cur.TotalBani = v
+			}
+			return
+		}
+
 		if p, ok := extractProductRow(tr); ok {
-			if seen[p.Name] {
+			if seenProduct[p.Name] {
 				return
 			}
-			seen[p.Name] = true
+			seenProduct[p.Name] = true
 			if p.SellerGroup == "" {
-				p.SellerGroup = sellerFromBanner(currentGroupLabel)
+				p.SellerGroup = cur.SellerGroup
 			}
-			pe.Products = append(pe.Products, p)
+			cur.Products = append(cur.Products, p)
 		}
 	})
+	finish()
+	return shipments
+}
+
+func sumShipmentTotals(shipments []ParsedShipment) int64 {
+	var sum int64
+	for _, s := range shipments {
+		sum += s.TotalBani
+	}
+	return sum
 }
 
 func matchBanner(tr *goquery.Selection) (ok bool, text string) {
@@ -270,36 +311,20 @@ func matchBanner(tr *goquery.Selection) (ok bool, text string) {
 		return false, ""
 	}
 	lower := strings.ToLower(t)
-	if !strings.HasPrefix(lower, "produse livrate") && !strings.HasPrefix(lower, "produse vândute") && !strings.HasPrefix(lower, "produse vandute") {
+	if !strings.HasPrefix(lower, "produse livrate") &&
+		!strings.HasPrefix(lower, "produse vândute") &&
+		!strings.HasPrefix(lower, "produse vandute") {
 		return false, ""
 	}
 	return true, t
 }
 
-// isDeliveryBanner identifies banners that announce a delivery group (as
-// opposed to seller sub-headers). Delivery banners mention "livrate".
 func isDeliveryBanner(banner string) bool {
-	l := strings.ToLower(banner)
-	l = strings.ReplaceAll(l, "ă", "a")
-	l = strings.ReplaceAll(l, "â", "a")
-	l = strings.ReplaceAll(l, "î", "i")
-	l = strings.ReplaceAll(l, "ș", "s")
-	l = strings.ReplaceAll(l, "ț", "t")
-	return strings.Contains(l, "livrate")
+	return strings.Contains(normalize(banner), "livrate")
 }
 
 func isEmagDelivered(banner string) bool {
-	l := strings.ToLower(banner)
-	l = strings.ReplaceAll(l, "ă", "a")
-	l = strings.ReplaceAll(l, "â", "a")
-	l = strings.ReplaceAll(l, "î", "i")
-	l = strings.ReplaceAll(l, "ș", "s")
-	l = strings.ReplaceAll(l, "ț", "t")
-	// Accept any banner that says something is delivered BY eMAG
-	//   "produse livrate de emag"
-	//   "produse vandute si livrate de emag"
-	//   "produse vandute de X si livrate de emag"
-	//   "produse vandute de emag" (sub-banner inside an emag-delivered outer group)
+	l := normalize(banner)
 	if strings.Contains(l, "livrate de emag") {
 		return true
 	}
@@ -309,32 +334,75 @@ func isEmagDelivered(banner string) bool {
 	return false
 }
 
+// deliveryPartyFromBanner returns who delivers the shipment, e.g. "eMAG" or
+// "ONLINE TRADING".
+func deliveryPartyFromBanner(banner string) string {
+	l := normalize(banner)
+	if strings.Contains(l, "livrate de emag") {
+		return "eMAG"
+	}
+	// "Produse vândute și livrate de X" — capture X (preserve casing).
+	re := regexp.MustCompile(`(?i)și\s+livrate\s+de\s+(.+?)\s*$|si\s+livrate\s+de\s+(.+?)\s*$|livrate\s+de\s+(.+?)\s*$`)
+	if m := re.FindStringSubmatch(banner); m != nil {
+		for _, s := range m[1:] {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	return "eMAG"
+}
+
+// sellerFromBanner returns the seller for a delivery banner. For
+// "Produse vândute și livrate de X" it is X. For "Produse livrate de eMAG"
+// (outer group) the seller is initially eMAG and may be refined by a nested
+// "Produse vândute de Y" sub-header.
 func sellerFromBanner(banner string) string {
-	l := strings.ToLower(banner)
+	l := normalize(banner)
+	if strings.Contains(l, "vandute si livrate de") {
+		re := regexp.MustCompile(`(?i)vândute\s+și\s+livrate\s+de\s+(.+?)\s*$|vandute\s+si\s+livrate\s+de\s+(.+?)\s*$`)
+		if m := re.FindStringSubmatch(banner); m != nil {
+			for _, s := range m[1:] {
+				if s = strings.TrimSpace(s); s != "" {
+					return s
+				}
+			}
+		}
+	}
+	if strings.Contains(l, "livrate de emag") {
+		return "eMAG"
+	}
+	return "eMAG"
+}
+
+// sellerFromVanduteBanner handles the nested "Produse vândute de X" sub-header
+// (without any "livrate"). Returns X or empty if it can't parse.
+func sellerFromVanduteBanner(banner string) string {
+	re := regexp.MustCompile(`(?i)produse\s+vândute\s+de\s+(.+?)\s*$|produse\s+vandute\s+de\s+(.+?)\s*$`)
+	if m := re.FindStringSubmatch(banner); m != nil {
+		for _, s := range m[1:] {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func normalize(s string) string {
+	l := strings.ToLower(s)
 	l = strings.ReplaceAll(l, "ă", "a")
 	l = strings.ReplaceAll(l, "â", "a")
 	l = strings.ReplaceAll(l, "î", "i")
 	l = strings.ReplaceAll(l, "ș", "s")
 	l = strings.ReplaceAll(l, "ț", "t")
-	if strings.Contains(l, "vandute de emag") {
-		return "eMAG"
-	}
-	// "Produse vândute de X și livrate de eMAG" → X
-	reSeller := regexp.MustCompile(`(?i)vandute de (.+?)\s+si livrate de emag`)
-	if m := reSeller.FindStringSubmatch(l); m != nil {
-		return strings.TrimSpace(m[1])
-	}
-	return "eMAG"
+	return l
 }
 
-// isTotalRow returns true if the row is a "Total:" line (not a product row).
 func isTotalRow(text string) bool {
-	// Heuristic: a total row has "Total:" prefix (after whitespace) and doesn't have "N buc".
 	l := strings.ToLower(strings.TrimSpace(text))
 	if !strings.HasPrefix(l, "total") {
-		// Sometimes there is leading whitespace from sibling cells
-		idx := strings.Index(l, "total:")
-		if idx < 0 {
+		if idx := strings.Index(l, "total:"); idx < 0 {
 			return false
 		}
 	}
@@ -342,10 +410,6 @@ func isTotalRow(text string) bool {
 }
 
 // extractProductRow returns a Product when the row looks like a product row.
-// Product row signals:
-//   - contains an <img> (preferably from s13emagst.akamaized.net)
-//   - has an <a title="..."> for the product name
-//   - has "N buc" and "X Lei" in its text
 func extractProductRow(tr *goquery.Selection) (Product, bool) {
 	text := strings.Join(strings.Fields(tr.Text()), " ")
 	if text == "" {
@@ -360,7 +424,6 @@ func extractProductRow(tr *goquery.Selection) (Product, bool) {
 		return Product{}, false
 	}
 
-	// Reject rows that are discount/shipping/total lines
 	lo := strings.ToLower(text)
 	if strings.Contains(lo, "discount") || strings.Contains(lo, "reducere") ||
 		strings.Contains(lo, "cost livrare") || strings.Contains(lo, "servicii") ||
@@ -368,17 +431,14 @@ func extractProductRow(tr *goquery.Selection) (Product, bool) {
 		return Product{}, false
 	}
 
-	// Image
 	var imgURL string
 	if img := tr.Find("img").First(); img.Length() > 0 {
 		imgURL, _ = img.Attr("src")
 	}
-	// A product row should have a product image from eMAG's product CDN.
 	if imgURL == "" || !strings.Contains(imgURL, "emagst.akamaized.net") {
 		return Product{}, false
 	}
 
-	// Name: prefer <a title="..."> on a link.
 	name := ""
 	tr.Find("a[title]").EachWithBreak(func(_ int, a *goquery.Selection) bool {
 		if t, ok := a.Attr("title"); ok && len(strings.TrimSpace(t)) > 3 {
@@ -398,11 +458,9 @@ func extractProductRow(tr *goquery.Selection) (Product, bool) {
 
 	qty, _ := strconv.Atoi(qtyMatch[1])
 
-	// Line total = last price (typical eMAG layout puts the positive line total at the right).
 	var bani int64
 	for i := len(priceMatches) - 1; i >= 0; i-- {
-		v := priceToBani(priceMatches[i][1])
-		if v > 0 {
+		if v := priceToBani(priceMatches[i][1]); v > 0 {
 			bani = v
 			break
 		}
@@ -429,7 +487,7 @@ func priceToBani(s string) int64 {
 }
 
 // extractStylizedPin finds the 7-box PIN rendered as individual styled <span>
-// elements in the Sameday arrived email (used only as fallback if QR URL parse fails).
+// elements in the Sameday arrived email.
 func extractStylizedPin(doc *goquery.Document) string {
 	var best string
 	doc.Find("table").EachWithBreak(func(_ int, tbl *goquery.Selection) bool {
@@ -452,15 +510,10 @@ func extractStylizedPin(doc *goquery.Document) string {
 	return strings.ToUpper(best)
 }
 
-// extractEasyboxFromHTML finds the block next to the pin_easybox icon and
-// returns the first two meaningful lines (name, address).
 func extractEasyboxFromHTML(doc *goquery.Document) (name, addr string) {
-	// The pin icon is <img alt="pin_easybox">. Find the nearest <p> after it
-	// in the enclosing row or parent block.
 	var captured []string
 	doc.Find("img[alt='pin_easybox']").EachWithBreak(func(_ int, img *goquery.Selection) bool {
-		// Walk up to the enclosing row/table and search for a <p>
-		container := img.Parent().Parent() // img -> td -> tr
+		container := img.Parent().Parent()
 		var text string
 		if p := container.Find("p").First(); p.Length() > 0 {
 			text, _ = p.Html()
@@ -468,7 +521,6 @@ func extractEasyboxFromHTML(doc *goquery.Document) (name, addr string) {
 			text, _ = pp.Html()
 		}
 		if text != "" {
-			// Replace <br> with newlines then strip tags
 			text = strings.ReplaceAll(text, "<br>", "\n")
 			text = strings.ReplaceAll(text, "<br/>", "\n")
 			text = strings.ReplaceAll(text, "<br />", "\n")
@@ -500,7 +552,6 @@ func extractEasyboxFromHTML(doc *goquery.Document) (name, addr string) {
 	return
 }
 
-// stripTags is a tiny best-effort HTML tag stripper for short fragments.
 func stripTags(s string) string {
 	var b strings.Builder
 	inTag := false
@@ -519,8 +570,6 @@ func stripTags(s string) string {
 	return b.String()
 }
 
-// htmlToText returns a plain-text rendering of an HTML body suitable for
-// regex-based classification of arrived emails. Preserves newlines crudely.
 func htmlToText(h string) string {
 	var b strings.Builder
 	inTag := false
@@ -538,7 +587,6 @@ func htmlToText(h string) string {
 		}
 	}
 	s := b.String()
-	// HTML entity decoding for the handful we care about
 	repls := []string{
 		"&nbsp;", " ",
 		"&amp;", "&",

@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -80,6 +81,47 @@ func NewWeb(store *Store) (*Web, error) {
 			}
 			return t.In(loc).Format("Mon 2 Jan, 15:04")
 		},
+		"activeShipments": func(shipments []Shipment) []Shipment {
+			out := make([]Shipment, 0, len(shipments))
+			for _, sh := range shipments {
+				if sh.Active() {
+					out = append(out, sh)
+				}
+			}
+			return out
+		},
+		"dismissedShipments": func(shipments []Shipment) []Shipment {
+			out := make([]Shipment, 0, len(shipments))
+			for _, sh := range shipments {
+				if sh.DismissedAt != nil {
+					out = append(out, sh)
+				}
+			}
+			return out
+		},
+		"pickedUpShipments": func(shipments []Shipment) []Shipment {
+			out := make([]Shipment, 0, len(shipments))
+			for _, sh := range shipments {
+				if sh.PickedUpAt != nil {
+					out = append(out, sh)
+				}
+			}
+			return out
+		},
+		"shipmentLabel": func(sh Shipment) string {
+			seller := strings.TrimSpace(sh.SellerGroup)
+			delivery := strings.TrimSpace(sh.DeliveryBy)
+			if seller == "" && delivery == "" {
+				return "Livrare"
+			}
+			if seller == "" || strings.EqualFold(seller, delivery) {
+				return "Livrat de " + delivery
+			}
+			if delivery == "" {
+				return "Vândut de " + seller
+			}
+			return seller + " · livrat de " + delivery
+		},
 	}
 
 	tpl, err := template.New("").Funcs(funcs).ParseFS(assetsFS, "templates/*.html")
@@ -94,7 +136,7 @@ func (w *Web) Routes() http.Handler {
 	mux.HandleFunc("/healthz", w.handleHealth)
 	mux.HandleFunc("/map", w.handleMap)
 	mux.HandleFunc("/api/pins", w.handlePins)
-	mux.HandleFunc("/order/", w.handleOrder) // /order/{num} or /order/{num}/confirm
+	mux.HandleFunc("/order/", w.handleOrder)
 	mux.Handle("/static/", http.FileServer(http.FS(assetsFS)))
 	mux.HandleFunc("/", w.handleList)
 	return logMiddleware(securityHeaders(mux))
@@ -115,14 +157,15 @@ func (w *Web) handleList(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
-	data := map[string]interface{}{
-		"Orders": orders,
-	}
-	if err := w.tpl.ExecuteTemplate(rw, "list.html", data); err != nil {
+	if err := w.tpl.ExecuteTemplate(rw, "list.html", map[string]interface{}{"Orders": orders}); err != nil {
 		log.Printf("web: render list: %v", err)
 	}
 }
 
+// /order/{num}
+// /order/{num}/shipment/{id}/dismiss
+// /order/{num}/shipment/{id}/restore
+// /order/{num}/shipment/{id}/confirm
 func (w *Web) handleOrder(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	path := strings.TrimPrefix(r.URL.Path, "/order/")
@@ -133,16 +176,37 @@ func (w *Web) handleOrder(rw http.ResponseWriter, r *http.Request) {
 	}
 	orderNum := parts[0]
 
-	if len(parts) == 2 && parts[1] == "confirm" {
+	if len(parts) >= 4 && parts[1] == "shipment" {
 		if r.Method != http.MethodPost {
 			http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if err := w.store.MarkPickedUp(ctx, orderNum); err != nil {
-			http.Error(rw, err.Error(), 500)
+		shipmentID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			http.NotFound(rw, r)
 			return
 		}
-		http.Redirect(rw, r, "/", http.StatusSeeOther)
+		switch parts[3] {
+		case "dismiss":
+			if err := w.store.DismissShipment(ctx, orderNum, shipmentID); err != nil {
+				http.Error(rw, err.Error(), 500)
+				return
+			}
+		case "restore":
+			if err := w.store.RestoreShipment(ctx, orderNum, shipmentID); err != nil {
+				http.Error(rw, err.Error(), 500)
+				return
+			}
+		case "confirm":
+			if err := w.store.MarkShipmentPickedUp(ctx, orderNum, shipmentID); err != nil {
+				http.Error(rw, err.Error(), 500)
+				return
+			}
+		default:
+			http.NotFound(rw, r)
+			return
+		}
+		http.Redirect(rw, r, "/order/"+orderNum, http.StatusSeeOther)
 		return
 	}
 
@@ -184,21 +248,27 @@ func (w *Web) handlePins(rw http.ResponseWriter, r *http.Request) {
 	}
 	var pins []pinOut
 	for _, o := range orders {
-		if o.Lat == nil || o.Lon == nil {
-			continue
+		for _, sh := range o.Shipments {
+			if !sh.Active() || sh.Lat == nil || sh.Lon == nil {
+				continue
+			}
+			status := string(o.Status)
+			if sh.HasPickup() {
+				status = string(StatusArrived)
+			}
+			p := pinOut{
+				OrderNumber:    o.OrderNumber,
+				Lat:            *sh.Lat,
+				Lon:            *sh.Lon,
+				EasyboxName:    sh.EasyboxName,
+				EasyboxAddress: sh.EasyboxAddress,
+				Status:         status,
+			}
+			if sh.PickupDeadline != nil {
+				p.Deadline = sh.PickupDeadline.Format(time.RFC3339)
+			}
+			pins = append(pins, p)
 		}
-		p := pinOut{
-			OrderNumber:    o.OrderNumber,
-			Lat:            *o.Lat,
-			Lon:            *o.Lon,
-			EasyboxName:    o.EasyboxName,
-			EasyboxAddress: o.EasyboxAddress,
-			Status:         string(o.Status),
-		}
-		if o.PickupDeadline != nil {
-			p.Deadline = o.PickupDeadline.Format(time.RFC3339)
-		}
-		pins = append(pins, p)
 	}
 	rw.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(rw).Encode(pins)
