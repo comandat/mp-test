@@ -159,7 +159,6 @@ func (s *Store) migrate() error {
 			seller_group TEXT,
 			FOREIGN KEY(shipment_id) REFERENCES shipments(id) ON DELETE CASCADE
 		)`,
-		`CREATE INDEX IF NOT EXISTS products_shipment_idx ON products(shipment_id)`,
 		`CREATE INDEX IF NOT EXISTS products_order_idx ON products(order_number)`,
 		`CREATE TABLE IF NOT EXISTS emails_processed(
 			message_id TEXT PRIMARY KEY,
@@ -186,6 +185,10 @@ func (s *Store) migrate() error {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate: add shipment_id: %w", err)
 		}
+	}
+	// Index must be created after shipment_id exists (ALTER TABLE above).
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS products_shipment_idx ON products(shipment_id)`); err != nil {
+		return fmt.Errorf("migrate: products_shipment_idx: %w", err)
 	}
 	// courier_label was added after the initial shipments schema shipped.
 	if _, err := s.db.Exec(`ALTER TABLE shipments ADD COLUMN courier_label TEXT`); err != nil {
