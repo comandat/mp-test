@@ -202,31 +202,53 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	// Self-heal: only the (a) case — emails were marked processed before
-	// the shipments table existed. Wipe emails_processed so the next scan
-	// replays everything. Guarded by a one-shot flag in _meta so we can't
-	// loop on it. The (b) "shipments without products" case is handled
-	// instead by inspecting raw emails via /debug/emails.
+	// Self-heal markers (one-shot, idempotent across restarts):
+	//   v1: wipe emails_processed if shipments was empty (post-schema upgrade).
+	//   v2: wipe shipments + emails_processed if any shipment has no products
+	//       (post-parser-fix: a[title]-less marketplace rows now extract).
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS _meta(key TEXT PRIMARY KEY, value TEXT)`); err != nil {
 		return fmt.Errorf("migrate: _meta: %w", err)
 	}
-	var done string
-	_ = s.db.QueryRow(`SELECT value FROM _meta WHERE key='self_heal_v1'`).Scan(&done)
-	if done == "" {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	var v1Done string
+	_ = s.db.QueryRow(`SELECT value FROM _meta WHERE key='self_heal_v1'`).Scan(&v1Done)
+	if v1Done == "" {
 		var shipCount, procCount int
 		_ = s.db.QueryRow(`SELECT COUNT(*) FROM shipments`).Scan(&shipCount)
 		_ = s.db.QueryRow(`SELECT COUNT(*) FROM emails_processed`).Scan(&procCount)
 		if shipCount == 0 && procCount > 0 {
-			log.Printf("migrate: self-heal — shipments empty, clearing %d emails_processed entries", procCount)
+			log.Printf("migrate: self-heal v1 — shipments empty, clearing %d emails_processed entries", procCount)
 			if _, err := s.db.Exec(`DELETE FROM emails_processed`); err != nil {
 				return fmt.Errorf("migrate: reset emails_processed: %w", err)
 			}
 		}
-		if _, err := s.db.Exec(`INSERT INTO _meta(key, value) VALUES('self_heal_v1', ?)`,
-			time.Now().UTC().Format(time.RFC3339)); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO _meta(key, value) VALUES('self_heal_v1', ?)`, now); err != nil {
 			return fmt.Errorf("migrate: mark self_heal_v1: %w", err)
 		}
 	}
+
+	var v2Done string
+	_ = s.db.QueryRow(`SELECT value FROM _meta WHERE key='self_heal_v2'`).Scan(&v2Done)
+	if v2Done == "" {
+		var emptyShipments int
+		_ = s.db.QueryRow(`
+			SELECT COUNT(*) FROM shipments sh
+			WHERE NOT EXISTS (SELECT 1 FROM products p WHERE p.shipment_id = sh.id)`).Scan(&emptyShipments)
+		if emptyShipments > 0 {
+			log.Printf("migrate: self-heal v2 — %d shipments have no products, wiping shipments + emails_processed for re-scan", emptyShipments)
+			if _, err := s.db.Exec(`DELETE FROM shipments`); err != nil {
+				return fmt.Errorf("migrate: reset shipments: %w", err)
+			}
+			if _, err := s.db.Exec(`DELETE FROM emails_processed`); err != nil {
+				return fmt.Errorf("migrate: reset emails_processed (v2): %w", err)
+			}
+		}
+		if _, err := s.db.Exec(`INSERT INTO _meta(key, value) VALUES('self_heal_v2', ?)`, now); err != nil {
+			return fmt.Errorf("migrate: mark self_heal_v2: %w", err)
+		}
+	}
+
 	return nil
 }
 

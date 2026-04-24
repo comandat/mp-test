@@ -461,9 +461,17 @@ func extractProductRow(tr *goquery.Selection) (Product, bool) {
 		return true
 	})
 	if name == "" {
-		if a := tr.Find("a").First(); a.Length() > 0 {
-			name = strings.TrimSpace(a.Text())
-		}
+		// Marketplace sellers (e.g. "T&G shop and business") often skip the
+		// title attribute; the product name lives as text content inside
+		// the second <a>. Skip empty anchors (the one wrapping the image).
+		tr.Find("a").EachWithBreak(func(_ int, a *goquery.Selection) bool {
+			t := strings.TrimSpace(a.Text())
+			if len(t) > 3 {
+				name = t
+				return false
+			}
+			return true
+		})
 	}
 	if name == "" {
 		return Product{}, false

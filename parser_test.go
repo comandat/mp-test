@@ -179,6 +179,86 @@ func TestParseConfirmationProductionHTML(t *testing.T) {
 	}
 }
 
+// marketplaceNoTitleHTML mirrors order #486075214 from "T&G shop and business":
+// the product anchors carry NO title attribute, so the parser must fall back
+// to the second <a>'s text content (the first <a> wraps the image and has
+// empty text).
+const marketplaceNoTitleHTML = `<html><body>
+<table>
+<tr><td style="text-align:center;font-size:17px;">Produse vândute și livrate de <a target="_blank" style="text-decoration:underline" href="https://example.com/shop">T&amp;g shop and business</a></td></tr>
+<tr><td><table>
+<tr><td style="text-align:left">Livrare în easybox Lujerului</td></tr>
+<tr><td colspan="4" class="verticalSpacer5">&nbsp;</td></tr>
+<tr>
+  <td>
+    <a href="https://u6270107.ct.sendgrid.net/ls/click?xxx" target="_blank" style="text-decoration:none;color:#000000">
+      <img src="https://s13emagst.akamaized.net/products/115613/115612150/images/res_d691fa45ced4d800df166f8e18fb7ebb.jpg?width=80&amp;height=80&amp;hash=8F6D1E57AE4910FC8218C5A758ABAA05" width="50" alt="img" style="width:100%;max-width:50px" />
+    </a>
+  </td>
+  <td style="padding-left:8px;font-size:13px;color:#5A5A5A;">
+    <a href="https://u6270107.ct.sendgrid.net/ls/click?yyy" target="_blank" style="text-decoration:none;font-size:13px;color:#5A5A5A">
+      Tricou dama Kujurnms, maneca scurta,...
+    </a>
+  </td>
+  <td style="text-align:right;font-size:13px;color:#5A5A5A;">1 buc</td>
+  <td style="text-align:right;font-size:13px;color:#5A5A5A;">50,00 LEI</td>
+</tr>
+<tr>
+  <td style="font-size:13px;">Reducere conform voucher: xxxx-xxxx-xxxx-3114</td>
+  <td style="text-align:right;font-size:13px;">-50,00 LEI</td>
+</tr>
+<tr>
+  <td style="text-align:right;font-weight:600">Cost livrare și procesare:</td>
+  <td><table><tr><td style="text-align:right">10,00 Lei</td></tr></table></td>
+</tr>
+<tr>
+  <td style="text-align:right;font-weight:600">Servicii operationale:</td>
+  <td><table><tr><td style="text-align:right">2,69 LEI</td></tr></table></td>
+</tr>
+<tr>
+  <td style="text-align:right;font-weight:600">Total:</td>
+  <td style="text-align:right">12,69 Lei</td>
+</tr>
+</table></td></tr>
+</table>
+</body></html>`
+
+func TestParseConfirmationMarketplaceNoTitle(t *testing.T) {
+	pe, err := ParseConfirmation("Confirmare înregistrare comandă #486075214", marketplaceNoTitleHTML)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(pe.Shipments) != 1 {
+		t.Fatalf("expected 1 shipment, got %d", len(pe.Shipments))
+	}
+	sh := pe.Shipments[0]
+	if sh.EasyboxName != "Lujerului" {
+		t.Errorf("easybox: %q", sh.EasyboxName)
+	}
+	if sh.DeliveredByEmag {
+		t.Errorf("should NOT be delivered by eMAG (T&G is the seller)")
+	}
+	if !strings.Contains(strings.ToLower(sh.DeliveryBy), "t&g") && !strings.Contains(strings.ToLower(sh.DeliveryBy), "shop and business") {
+		t.Errorf("delivery_by: %q", sh.DeliveryBy)
+	}
+	if len(sh.Products) != 1 {
+		t.Fatalf("expected 1 product, got %d — shipment=%+v", len(sh.Products), sh)
+	}
+	p := sh.Products[0]
+	if !strings.HasPrefix(p.Name, "Tricou dama Kujurnms") {
+		t.Errorf("product name: %q", p.Name)
+	}
+	if p.Qty != 1 || p.LineTotalBani != 5000 {
+		t.Errorf("product qty/total: %d %d", p.Qty, p.LineTotalBani)
+	}
+	if !strings.Contains(p.ImageURL, "s13emagst.akamaized.net") {
+		t.Errorf("product image: %q", p.ImageURL)
+	}
+	if sh.TotalBani != 1269 {
+		t.Errorf("shipment total: %d", sh.TotalBani)
+	}
+}
+
 func TestClassify(t *testing.T) {
 	cases := []struct {
 		subject, body, want string
